@@ -9,6 +9,8 @@
 #include "non_cvx_data.h"
 #include "unconstrained_data.h"
 
+#include <vector>
+
 #ifdef OSQP_CODEGEN
 TEST_CASE_METHOD(codegen_test_fixture, "Basic codegen", "[codegen]")
 {
@@ -209,6 +211,63 @@ TEST_CASE_METHOD(non_cvx_test_fixture, "Codegen: Data export", "[codegen],[nonco
   // Codegen should work or error as appropriate
   mu_assert("Nonconvex codegen error!",
             exitflag == expected_error);
+}
+
+TEST_CASE_METHOD(codegen_test_fixture, "Codegen: soft constraint data export", "[codegen],[penalty]")
+{
+  OSQPInt exitflag;
+
+  OSQPCodegenDefines_ptr defines{OSQPCodegenDefines_new()};
+
+  settings->polishing = 1;
+  settings->scaling   = 1;
+
+  OSQPInt     embedded;
+  std::string dir;
+  bool        uniform;
+
+  std::tie( embedded, dir, uniform ) =
+    GENERATE( table<OSQPInt, std::string, bool>(
+        { std::make_tuple( 1, CODEGEN1_DIR, true  ),
+          std::make_tuple( 1, CODEGEN1_DIR, false ),
+          std::make_tuple( 2, CODEGEN2_DIR, true  ),
+          std::make_tuple( 2, CODEGEN2_DIR, false ) } ) );
+
+  char name[100];
+  snprintf(name, 100, "data_penalty_%s_embedded_%d_", uniform ? "uniform" : "mixed",
+           (int)embedded);
+
+  CAPTURE(embedded);
+  CAPTURE(uniform);
+
+  exitflag = osqp_setup(&tmpSolver, data->P, data->q,
+                        data->A, data->l, data->u,
+                        data->m, data->n, settings.get());
+  solver.reset(tmpSolver);
+  mu_assert("Setup error!", exitflag == 0);
+
+  /* A uniform penalty leaves the type vector out of the generated data, a mixed
+     one emits it; both have to reach the generated solver */
+  std::vector<OSQPInt>   type(data->m, OSQP_PENALTY_L1L2);
+  std::vector<OSQPFloat> a1(data->m, 0.1), a2(data->m, 0.5), dl(data->m, 1.0);
+
+  for (OSQPInt i = 0; i < data->m; i++)
+    if (!uniform && (i % 2)) type[i] = OSQP_PENALTY_HUBER;
+
+  exitflag = osqp_setup_penalty(solver.get(), OSQP_PENALTY_L1L2,
+                                uniform ? OSQP_NULL : type.data(),
+                                a1.data(), a2.data(), dl.data());
+  mu_assert("Penalty setup error!", exitflag == 0);
+
+  defines->embedded_mode = embedded;
+
+  exitflag = osqp_codegen(solver.get(), dir.c_str(), name, defines.get());
+
+  mu_assert("Soft constraint codegen should have worked!",
+            exitflag == OSQP_NO_ERROR);
+
+  /* NB: tests/codegen/compilation_test checks that the generated solver
+     reproduces this solution; the reference values live there. */
 }
 
 TEST_CASE_METHOD(codegen_test_fixture, "Codegen: defines defaults", "[codegen],[defaults]")

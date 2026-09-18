@@ -312,6 +312,42 @@ static OSQPInt write_scaling(FILE*              f,
 * Data
 *******/
 
+/* Soft-constraint penalty. The parameters are emitted already scaled, like l
+   and u, so the generated solver needs no scaling pass over them. */
+static OSQPInt write_penalty(FILE*                  f,
+                             const OSQPPenaltyData* pen,
+                             const char*            prefix) {
+
+  OSQPInt exitflag = OSQP_NO_ERROR;
+  char name[MAX_VAR_LENGTH];
+
+  sprintf(name, "%sdata_penalty_alpha1", prefix);
+  GENERATE_ERROR(write_OSQPVectorf(f, pen->alpha1, name))
+  sprintf(name, "%sdata_penalty_alpha2", prefix);
+  GENERATE_ERROR(write_OSQPVectorf(f, pen->alpha2, name))
+  sprintf(name, "%sdata_penalty_delta", prefix);
+  GENERATE_ERROR(write_OSQPVectorf(f, pen->delta, name))
+
+  /* A uniform penalty needs no type vector, and leaving it out lets the
+     element-wise kernels take their specialized path */
+  if (!pen->uniform) {
+    sprintf(name, "%sdata_penalty_type", prefix);
+    GENERATE_ERROR(write_OSQPVectori(f, pen->type, name))
+  }
+
+  fprintf(f, "OSQPPenaltyData %sdata_penalty = {\n", prefix);
+  fprintf(f, "  %" OSQP_INT_FMT ",\n", pen->uniform);
+  fprintf(f, "  %" OSQP_INT_FMT ",\n", pen->default_penalty_type);
+  if (pen->uniform) fprintf(f, "  OSQP_NULL,\n");
+  else              fprintf(f, "  &%sdata_penalty_type,\n", prefix);
+  fprintf(f, "  &%sdata_penalty_alpha1,\n", prefix);
+  fprintf(f, "  &%sdata_penalty_alpha2,\n", prefix);
+  fprintf(f, "  &%sdata_penalty_delta,\n", prefix);
+  fprintf(f, "};\n\n");
+
+  return exitflag;
+}
+
 static OSQPInt write_data(FILE*           f,
                           const OSQPData* data,
                           const char*     prefix) {
@@ -332,6 +368,9 @@ static OSQPInt write_data(FILE*           f,
   GENERATE_ERROR(write_OSQPVectorf(f, data->l, name))
   sprintf(name, "%sdata_u", prefix);
   GENERATE_ERROR(write_OSQPVectorf(f, data->u, name))
+
+  if (data->penalty) PROPAGATE_ERROR(write_penalty(f, data->penalty, prefix))
+
   fprintf(f, "OSQPData %sdata = {\n", prefix);
   fprintf(f, "  %" OSQP_INT_FMT ",\n", data->n);
   fprintf(f, "  %" OSQP_INT_FMT ",\n", data->m);
@@ -340,7 +379,8 @@ static OSQPInt write_data(FILE*           f,
   fprintf(f, "  &%sdata_q,\n", prefix);
   fprintf(f, "  &%sdata_l,\n", prefix);
   fprintf(f, "  &%sdata_u,\n", prefix);
-  fprintf(f, "  OSQP_NULL,\n"); /* penalty */
+  if (data->penalty) fprintf(f, "  &%sdata_penalty,\n", prefix);
+  else               fprintf(f, "  OSQP_NULL,\n");
   fprintf(f, "};\n\n");
 
   return exitflag;
@@ -544,6 +584,14 @@ static OSQPInt write_workspace(FILE*             f,
     PROPAGATE_ERROR(write_scaling(f, work->scaling, prefix))
   }
 
+  /* The reductions behind the objective and the duality gap need their scratch
+     element; the other two are only touched by the update functions, which the
+     generated solver does not have. */
+  if (work->data->penalty) {
+    sprintf(name, "%swork_penalty_val_tmp", prefix);
+    GENERATE_ERROR(write_OSQPVectorf(f, work->penalty_val_tmp, name))
+  }
+
   fprintf(f, "/* Define the workspace structure */\n");
   fprintf(f, "OSQPWorkspace %swork = {\n", prefix);
   fprintf(f, "  &%sdata,\n", prefix);
@@ -552,14 +600,20 @@ static OSQPInt write_workspace(FILE*             f,
   if (solver->settings->rho_is_vec) {
     fprintf(f, "  &%swork_rho_vec,\n", prefix);
     fprintf(f, "  &%swork_rho_inv_vec,\n", prefix);
-    fprintf(f, "  OSQP_NULL, OSQP_NULL, OSQP_NULL,\n"); /* penalty workspace */
+    if (work->data->penalty)
+      fprintf(f, "  OSQP_NULL, OSQP_NULL, &%swork_penalty_val_tmp,\n", prefix); /* penalty workspace */
+    else
+      fprintf(f, "  OSQP_NULL, OSQP_NULL, OSQP_NULL,\n"); /* penalty workspace */
     if (embedded > 1) {
       fprintf(f, "  &%swork_constr_type,\n", prefix);
     }
   } else {
     fprintf(f, "  OSQP_NULL,\n");    /* work_rho_vec */
     fprintf(f, "  OSQP_NULL,\n");    /* work_rho_inv_vec */
-    fprintf(f, "  OSQP_NULL, OSQP_NULL, OSQP_NULL,\n"); /* penalty workspace */
+    if (work->data->penalty)
+      fprintf(f, "  OSQP_NULL, OSQP_NULL, &%swork_penalty_val_tmp,\n", prefix); /* penalty workspace */
+    else
+      fprintf(f, "  OSQP_NULL, OSQP_NULL, OSQP_NULL,\n"); /* penalty workspace */
     if (embedded > 1) {
       fprintf(f, "  OSQP_NULL,\n");  /* work_constr_type */
     }

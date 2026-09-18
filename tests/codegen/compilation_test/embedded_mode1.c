@@ -4,6 +4,7 @@
 
 #include <stdio.h>
 #include "osqp.h"
+#include "glob_opts.h"   /* c_absval */
 
 #include "rho_is_vec_0_embedded_1_workspace.h"
 #include "rho_is_vec_1_embedded_1_workspace.h"
@@ -14,6 +15,9 @@
 #include "data_lp_embedded_1_workspace.h"
 #include "data_nonconvex_2_embedded_1_workspace.h"
 #include "data_unconstrained_embedded_1_workspace.h"
+
+#include "data_penalty_uniform_embedded_1_workspace.h"
+#include "data_penalty_mixed_embedded_1_workspace.h"
 
 int main() {
   OSQPInt exitflag;
@@ -110,6 +114,56 @@ int main() {
     printf( "  Solved non-nonconvex problem with no error.\n" );
   }
 
+
+  
+  /*
+   * soft constraints, uniform penalty
+   */
+  exitflag = osqp_solve( &data_penalty_uniform_embedded_1_solver );
+
+  if( exitflag > 0 ) {
+    printf( "  OSQP errored on data_penalty_uniform: %s\n", osqp_error_message(exitflag));
+    return (int)exitflag;
+  } else {
+    /* The generated solver has to reproduce the library's answer: if codegen
+       dropped the penalty it would silently solve the hard problem instead */
+    OSQPFloat obj = data_penalty_uniform_embedded_1_solver.info->obj_val;
+    OSQPFloat pen = data_penalty_uniform_embedded_1_solver.info->penalty_val;
+
+    if( c_absval(obj - (OSQPFloat)0.332352941176) > 1e-6 ||
+        c_absval(pen - (OSQPFloat)0.437820069204) > 1e-6 ) {
+      printf( "  data_penalty_uniform disagrees with the library: obj %g, penalty %g\n",
+              (double)obj, (double)pen );
+      return 1;
+    }
+
+    printf( "  Solved data_penalty_uniform, penalty term %g\n", (double)pen );
+  }
+
+
+  /*
+   * soft constraints, mixed penalty
+   */
+  exitflag = osqp_solve( &data_penalty_mixed_embedded_1_solver );
+
+  if( exitflag > 0 ) {
+    printf( "  OSQP errored on data_penalty_mixed: %s\n", osqp_error_message(exitflag));
+    return (int)exitflag;
+  } else {
+    /* The generated solver has to reproduce the library's answer: if codegen
+       dropped the penalty it would silently solve the hard problem instead */
+    OSQPFloat obj = data_penalty_mixed_embedded_1_solver.info->obj_val;
+    OSQPFloat pen = data_penalty_mixed_embedded_1_solver.info->penalty_val;
+
+    if( c_absval(obj - (OSQPFloat)0.326883116883) > 1e-6 ||
+        c_absval(pen - (OSQPFloat)0.441971664699) > 1e-6 ) {
+      printf( "  data_penalty_mixed disagrees with the library: obj %g, penalty %g\n",
+              (double)obj, (double)pen );
+      return 1;
+    }
+
+    printf( "  Solved data_penalty_mixed, penalty term %g\n", (double)pen );
+  }
 
   return 0;
 }
