@@ -266,20 +266,6 @@ void OSQPVectorf_ew_scale_penalty(OSQPVectorf*       alpha1,
                          c, E ? E->d_val : (const OSQPFloat*)OSQP_NULL, invert, alpha1->length);
 }
 
-void OSQPVectorf_ew_reset_changed_penalty(OSQPVectorf*       alpha1,
-                                          OSQPVectorf*       alpha2,
-                                          OSQPVectorf*       delta,
-                                          const OSQPVectori* old_type,
-                                          OSQPInt            old_default,
-                                          const OSQPVectori* new_type,
-                                          OSQPInt            new_default) {
-
-  cuda_vec_reset_changed_penalty(alpha1->d_val, alpha2->d_val, delta->d_val,
-                                 old_type ? old_type->d_val : (const OSQPInt*)OSQP_NULL, old_default,
-                                 new_type ? new_type->d_val : (const OSQPInt*)OSQP_NULL, new_default,
-                                 alpha1->length);
-}
-
 OSQPInt OSQPVectorf_penalty_params_check(const OSQPVectorf* alpha1,
                                          const OSQPVectorf* alpha2,
                                          const OSQPVectorf* delta,
@@ -296,7 +282,8 @@ OSQPInt OSQPVectorf_penalty_params_check(const OSQPVectorf* alpha1,
   return res;
 }
 
-void OSQPVectorf_penalty_flags(const OSQPVectorf* alpha2,
+void OSQPVectorf_penalty_flags(const OSQPVectorf* alpha1,
+                               const OSQPVectorf* alpha2,
                                const OSQPVectori* type,
                                OSQPInt            default_type,
                                OSQPInt*           any_soft,
@@ -305,7 +292,7 @@ void OSQPVectorf_penalty_flags(const OSQPVectorf* alpha2,
 
   OSQPInt res;
 
-  cuda_vec_penalty_flags(alpha2->d_val,
+  cuda_vec_penalty_flags(alpha1->d_val, alpha2->d_val,
                          type ? type->d_val : (const OSQPInt*)OSQP_NULL,
                          default_type, alpha2->length, &res, scratch->d_val);
 
@@ -510,20 +497,30 @@ OSQPFloat OSQPVectorf_penalty_conj_value(const OSQPVectorf* y,
 void OSQPVectorf_project_polar_reccone(OSQPVectorf*       y,
                                        const OSQPVectorf* l,
                                        const OSQPVectorf* u,
+                                       const OSQPVectori* type,
+                                       OSQPInt            default_type,
                                        OSQPFloat          infval) {
 
-  cuda_vec_project_polar_reccone(y->d_val, l->d_val, u->d_val, infval, y->length);
+  cuda_vec_project_polar_reccone(y->d_val, l->d_val, u->d_val,
+                                 type ? type->d_val : (const OSQPInt*)OSQP_NULL,
+                                 default_type, infval, y->length);
 }
 
 OSQPInt OSQPVectorf_in_reccone(const OSQPVectorf* y,
                                const OSQPVectorf* l,
                                const OSQPVectorf* u,
-                                     OSQPFloat    infval,
-                                     OSQPFloat    tol) {
+                               const OSQPVectorf* alpha2,
+                               const OSQPVectori* type,
+                               OSQPInt            default_type,
+                               OSQPFloat          infval,
+                               OSQPFloat          tol) {
 
   OSQPInt res;
 
-  cuda_vec_in_reccone(y->d_val, l->d_val, u->d_val, infval, tol, y->length, &res);
+  cuda_vec_in_reccone(y->d_val, l->d_val, u->d_val,
+                      alpha2 ? alpha2->d_val : (const OSQPFloat*)OSQP_NULL,
+                      type ? type->d_val : (const OSQPInt*)OSQP_NULL,
+                      default_type, infval, tol, y->length, &res);
 
   return res;
 }
@@ -556,12 +553,16 @@ void OSQPVectorf_ew_min_vec(OSQPVectorf*       c,
 OSQPInt OSQPVectorf_ew_bounds_type(OSQPVectori*       iseq,
                                    const OSQPVectorf* l,
                                    const OSQPVectorf* u,
+                                   const OSQPVectori* type,
+                                   OSQPInt            default_type,
                                    OSQPFloat          tol,
                                    OSQPFloat          infval) {
 
   OSQPInt has_changed;
 
-  cuda_vec_bounds_type(iseq->d_val, l->d_val, u->d_val, infval, tol, iseq->length, &has_changed);
+  cuda_vec_bounds_type(iseq->d_val, l->d_val, u->d_val,
+                       type ? type->d_val : (const OSQPInt*)OSQP_NULL,
+                       default_type, infval, tol, iseq->length, &has_changed);
 
   return has_changed;
 }
@@ -581,4 +582,3 @@ void OSQPVectorf_set_scalar_if_gt(OSQPVectorf*       x,
 
   cuda_vec_set_sc_if_gt(x->d_val, z->d_val, testval, newval, x->length);
 }
-

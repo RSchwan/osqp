@@ -2,6 +2,7 @@
 #include "osqp.h"
 #include "penalty.h"
 #include "algebra_vector.h"
+#include "auxil.h"
 #include "error.h"
 #include "printing.h"
 
@@ -13,6 +14,20 @@
  * The element-wise kernels take the fast path on OSQP_NULL. */
 static const OSQPVectori* penalty_types(const OSQPPenaltyData* pen) {
   return pen->uniform ? OSQP_NULL : pen->type;
+}
+
+/* Weights are required to be finite, so the declared type is the whole story:
+ * a row is soft if and only if its type is not OSQP_PENALTY_NONE. */
+const OSQPVectori* penalty_row_types(const OSQPSolver* solver) {
+  OSQPPenaltyData* pen = solver->work->data->penalty;
+
+  return pen ? penalty_types(pen) : OSQP_NULL;
+}
+
+OSQPInt penalty_default_type(const OSQPSolver* solver) {
+  OSQPPenaltyData* pen = solver->work->data->penalty;
+
+  return pen ? pen->default_penalty_type : OSQP_PENALTY_NONE;
 }
 
 void penalty_project(OSQPSolver*        solver,
@@ -97,7 +112,8 @@ void penalty_free(OSQPWorkspace* work) {
   work->data->penalty = OSQP_NULL;
 }
 
-/* Allocate the penalty data with all rows hard */
+/* Allocate the penalty data. The weights are left uninitialized: every entry
+ * point that creates or changes types also establishes valid weights. */
 static OSQPInt penalty_alloc(OSQPWorkspace* work,
                              OSQPInt        m) {
 
@@ -126,12 +142,6 @@ static OSQPInt penalty_alloc(OSQPWorkspace* work,
     return 1;
   }
 
-  /* An infinite weight collapses every prox to zero, so a row stays hard
-   * until the caller supplies weights */
-  OSQPVectorf_set_scalar(pen->alpha1, (OSQPFloat)HUGE_VAL);
-  OSQPVectorf_set_scalar(pen->alpha2, (OSQPFloat)HUGE_VAL);
-  OSQPVectorf_set_scalar(pen->delta,  (OSQPFloat)HUGE_VAL);
-
   return 0;
 }
 
@@ -156,9 +166,9 @@ static void penalty_report_errors(OSQPInt flags) {
     c_eprint("L1L2 penalty requires alpha1 >= 0 and alpha2 >= 0");
   }
 
-  if (flags & OSQP_PENALTY_ERR_ZERO) {
-    c_eprint("L1L2 penalty requires alpha1 > 0 or alpha2 > 0; "
-             "a zero penalty would drop the constraint entirely");
+  if (flags & OSQP_PENALTY_ERR_INFINITE) {
+    c_eprint("penalty weights must be finite and below OSQP_INFTY; "
+             "use OSQP_PENALTY_NONE for a hard constraint");
   }
 
   if (flags & OSQP_PENALTY_ERR_HUBER_W) {
@@ -174,7 +184,8 @@ static void penalty_update_flags(OSQPWorkspace* work) {
 
   OSQPPenaltyData* pen = work->data->penalty;
 
-  OSQPVectorf_penalty_flags(pen->alpha2, penalty_types(pen), pen->default_penalty_type,
+  OSQPVectorf_penalty_flags(pen->alpha1, pen->alpha2,
+                            penalty_types(pen), pen->default_penalty_type,
                             &work->penalty_any_soft,
                             &work->penalty_any_linear_growth, work->penalty_flags_tmp);
 }
@@ -214,11 +225,45 @@ static void penalty_commit_types(OSQPPenaltyData* pen,
   if (type) OSQPVectori_from_raw(pen->type, type);
 }
 
-OSQPInt osqp_setup_penalty(OSQPSolver*    solver,
-                           OSQPInt        default_type,
-                           const OSQPInt* type) {
+/* Validate staged weights, in the caller's units, against a type layout */
+static OSQPInt penalty_check_params(OSQPWorkspace*     work,
+                                    const OSQPVectorf* alpha1,
+                                    const OSQPVectorf* alpha2,
+                                    const OSQPVectorf* delta,
+                                    const OSQPVectori* type,
+                                    OSQPInt            default_type) {
 
-  OSQPWorkspace* work;
+  OSQPInt flags = OSQPVectorf_penalty_params_check(alpha1, alpha2, delta,
+                                                   type, default_type,
+                                                   work->penalty_flags_tmp);
+
+  if (flags) penalty_report_errors(flags);
+
+  return flags ? 1 : 0;
+}
+
+/* Refresh state derived from the type layout. */
+static OSQPInt penalty_finish_types(OSQPSolver* solver) {
+
+  penalty_update_flags(solver->work);
+
+  /* The rho classification depends on which rows are soft, and osqp_update_rho
+   * reuses the cached constr_type, so it has to be recomputed here */
+  if (solver->settings->rho_is_vec && update_rho_vec(solver))
+    return osqp_error(OSQP_LINSYS_SOLVER_INIT_ERROR);
+
+  return 0;
+}
+
+OSQPInt osqp_setup_penalty(OSQPSolver*      solver,
+                           OSQPInt          default_type,
+                           const OSQPInt*   type,
+                           const OSQPFloat* alpha1,
+                           const OSQPFloat* alpha2,
+                           const OSQPFloat* delta) {
+
+  OSQPWorkspace*   work;
+  OSQPPenaltyData* pen;
 
   /* Check if workspace has been initialized */
   if (!solver || !solver->work || !solver->work->data)
@@ -231,19 +276,37 @@ OSQPInt osqp_setup_penalty(OSQPSolver*    solver,
     return osqp_error(OSQP_DATA_VALIDATION_ERROR);
   }
 
+  if (!alpha1 || !alpha2 || !delta) {
+    c_eprint("osqp_setup_penalty requires alpha1, alpha2 and delta; "
+             "a soft row is never left without weights");
+    return osqp_error(OSQP_DATA_VALIDATION_ERROR);
+  }
+
   if (penalty_validate_types(default_type, type, work->data->m))
     return osqp_error(OSQP_DATA_VALIDATION_ERROR);
 
   if (penalty_alloc(work, work->data->m))
     return osqp_error(OSQP_MEM_ALLOC_ERROR);
 
-  /* penalty_alloc leaves every parameter infinite, so the rows declared soft
-   * here still behave as hard until osqp_update_penalty_params is called */
-  penalty_commit_types(work->data->penalty, default_type, type);
+  pen = work->data->penalty;
 
-  penalty_update_flags(work);
+  penalty_commit_types(pen, default_type, type);
 
-  return 0;
+  if (work->data->m > 0) {
+    OSQPVectorf_from_raw(pen->alpha1, alpha1);
+    OSQPVectorf_from_raw(pen->alpha2, alpha2);
+    OSQPVectorf_from_raw(pen->delta,  delta);
+
+    if (penalty_check_params(work, pen->alpha1, pen->alpha2, pen->delta,
+                             penalty_types(pen), pen->default_penalty_type)) {
+      penalty_free(work);
+      return osqp_error(OSQP_DATA_VALIDATION_ERROR);
+    }
+
+    penalty_scale(solver);
+  }
+
+  return penalty_finish_types(solver);
 }
 
 OSQPInt osqp_update_penalty_types(OSQPSolver*    solver,
@@ -252,7 +315,9 @@ OSQPInt osqp_update_penalty_types(OSQPSolver*    solver,
 
   OSQPWorkspace*   work;
   OSQPPenaltyData* pen;
-  OSQPInt          old_default;
+  OSQPVectorf*     alpha1;
+  OSQPVectorf*     alpha2;
+  OSQPVectorf*     delta;
 
   /* Check if workspace has been initialized */
   if (!solver || !solver->work || !solver->work->data)
@@ -269,24 +334,45 @@ OSQPInt osqp_update_penalty_types(OSQPSolver*    solver,
   if (penalty_validate_types(default_type, type, work->data->m))
     return osqp_error(OSQP_DATA_VALIDATION_ERROR);
 
-  old_default = pen->default_penalty_type;
+  /* Stage parameters in user units because a type change can alter the power
+   * of E applied to them. Rejected updates leave the stored values untouched. */
+  if (work->data->m > 0) {
+    if (type) OSQPVectori_from_raw(work->penalty_type_tmp, type);
 
-  /* Changing a row's type discards its weights, which were validated against
-   * the old type. The row stays hard until new weights are supplied.
-   * NB: the incoming types go to the staging vector rather than pen->type,
-   * which is still needed here as the previous state. */
-  if (type) OSQPVectori_from_raw(work->penalty_type_tmp, type);
+    alpha1 = work->z_prev;
+    alpha2 = work->delta_y;
+    delta  = work->Ax;
 
-  OSQPVectorf_ew_reset_changed_penalty(pen->alpha1, pen->alpha2, pen->delta,
-                                       penalty_types(pen), old_default,
-                                       type ? work->penalty_type_tmp : OSQP_NULL,
-                                       default_type);
+    OSQPVectorf_copy(alpha1, pen->alpha1);
+    OSQPVectorf_copy(alpha2, pen->alpha2);
+    OSQPVectorf_copy(delta,  pen->delta);
+
+    if (solver->settings->scaling)
+      OSQPVectorf_ew_scale_penalty(alpha1, alpha2, delta,
+                                   penalty_types(pen), pen->default_penalty_type,
+                                   work->scaling->c, work->scaling->E, 1);
+
+    if (penalty_check_params(work, alpha1, alpha2, delta,
+                             type ? work->penalty_type_tmp : OSQP_NULL,
+                             default_type))
+      return osqp_error(OSQP_DATA_VALIDATION_ERROR);
+
+    if (solver->settings->scaling)
+      OSQPVectorf_ew_scale_penalty(alpha1, alpha2, delta,
+                                   type ? work->penalty_type_tmp : OSQP_NULL,
+                                   default_type,
+                                   work->scaling->c, work->scaling->E, 0);
+  }
 
   penalty_commit_types(pen, default_type, type);
 
-  penalty_update_flags(work);
+  if (work->data->m > 0) {
+    OSQPVectorf_copy(pen->alpha1, alpha1);
+    OSQPVectorf_copy(pen->alpha2, alpha2);
+    OSQPVectorf_copy(pen->delta,  delta);
+  }
 
-  return 0;
+  return penalty_finish_types(solver);
 }
 
 OSQPInt osqp_update_penalty_params(OSQPSolver*      solver,
@@ -299,8 +385,6 @@ OSQPInt osqp_update_penalty_params(OSQPSolver*      solver,
   OSQPVectorf*     alpha1;
   OSQPVectorf*     alpha2;
   OSQPVectorf*     delta;
-  OSQPInt          m;
-  OSQPInt          flags;
 
   /* Check if workspace has been initialized */
   if (!solver || !solver->work || !solver->work->data)
@@ -308,14 +392,13 @@ OSQPInt osqp_update_penalty_params(OSQPSolver*      solver,
 
   work = solver->work;
   pen  = work->data->penalty;
-  m    = work->data->m;
 
   if (!pen) {
     c_eprint("no penalty has been set up; call osqp_setup_penalty first");
     return osqp_error(OSQP_DATA_NOT_INITIALIZED);
   }
 
-  if (m == 0) return 0;
+  if (work->data->m == 0) return 0;
 
   /* Assemble the candidate in workspace vectors that only carry state during a
    * solve, the same way osqp_update_data_vec borrows z_prev and delta_y */
@@ -328,39 +411,30 @@ OSQPInt osqp_update_penalty_params(OSQPSolver*      solver,
   OSQPVectorf_copy(delta,  pen->delta);
 
   // Merge the new values over the current ones in the caller's units
-  OSQPVectorf_ew_scale_penalty(alpha1, alpha2, delta,
-                               penalty_types(pen), pen->default_penalty_type,
-                               solver->settings->scaling ? work->scaling->c : 1.0,
-                               solver->settings->scaling ? work->scaling->E : OSQP_NULL,
-                               1);
+  if (solver->settings->scaling)
+    OSQPVectorf_ew_scale_penalty(alpha1, alpha2, delta,
+                                 penalty_types(pen), pen->default_penalty_type,
+                                 work->scaling->c, work->scaling->E, 1);
 
   if (alpha1_new) OSQPVectorf_from_raw(alpha1, alpha1_new);
   if (alpha2_new) OSQPVectorf_from_raw(alpha2, alpha2_new);
   if (delta_new)  OSQPVectorf_from_raw(delta,  delta_new);
 
   /* Validate before committing, so a rejected call leaves the penalty alone */
-  flags = OSQPVectorf_penalty_params_check(alpha1, alpha2, delta,
-                                           penalty_types(pen),
-                                           pen->default_penalty_type,
-                                           work->penalty_flags_tmp);
-
-  if (flags) {
-    penalty_report_errors(flags);
+  if (penalty_check_params(work, alpha1, alpha2, delta,
+                           penalty_types(pen), pen->default_penalty_type))
     return osqp_error(OSQP_DATA_VALIDATION_ERROR);
-  }
 
-  OSQPVectorf_ew_scale_penalty(alpha1, alpha2, delta,
-                               penalty_types(pen), pen->default_penalty_type,
-                               solver->settings->scaling ? work->scaling->c : 1.0,
-                               solver->settings->scaling ? work->scaling->E : OSQP_NULL,
-                               0);
+  if (solver->settings->scaling)
+    OSQPVectorf_ew_scale_penalty(alpha1, alpha2, delta,
+                                 penalty_types(pen), pen->default_penalty_type,
+                                 work->scaling->c, work->scaling->E, 0);
 
   OSQPVectorf_copy(pen->alpha1, alpha1);
   OSQPVectorf_copy(pen->alpha2, alpha2);
   OSQPVectorf_copy(pen->delta,  delta);
 
   penalty_update_flags(work);
-
   return 0;
 }
 

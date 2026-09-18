@@ -79,15 +79,6 @@ __global__ void vec_set_sc_cond_kernel(OSQPFloat*     a,
   }
 }
 
-__device__ static OSQPFloat scale_penalty_weight(OSQPFloat weight,
-                                                 OSQPFloat factor,
-                                                 OSQPInt invert) {
-  if (invert)
-    return weight == (OSQPFloat)HUGE_VAL ? OSQP_INFTY : weight / factor;
-
-  return weight >= OSQP_INFTY ? (OSQPFloat)HUGE_VAL : weight * factor;
-}
-
 __global__ void vec_scale_penalty_kernel(OSQPFloat*       a1,
                                          OSQPFloat*       a2,
                                          OSQPFloat*       d,
@@ -118,32 +109,11 @@ __global__ void vec_scale_penalty_kernel(OSQPFloat*       a1,
         continue;   // Hard row, parameters unused
     }
 
-    a1[i] = scale_penalty_weight(a1[i], f1, invert);
-    a2[i] = scale_penalty_weight(a2[i], f2, invert);
-    d[i]  = scale_penalty_weight(d[i],  fd, invert);
-  }
-}
-
-__global__ void vec_reset_changed_penalty_kernel(OSQPFloat*     a1,
-                                                OSQPFloat*     a2,
-                                                OSQPFloat*     d,
-                                                const OSQPInt* old_type,
-                                                OSQPInt        old_default,
-                                                const OSQPInt* new_type,
-                                                OSQPInt        new_default,
-                                                OSQPInt        n) {
-
-  OSQPInt idx = threadIdx.x + blockDim.x * blockIdx.x;
-  OSQPInt grid_size = blockDim.x * gridDim.x;
-
-  for(OSQPInt i = idx; i < n; i += grid_size) {
-    OSQPInt told = old_type ? old_type[i] : old_default;
-    OSQPInt tnew = new_type ? new_type[i] : new_default;
-
-    if (told != tnew) {
-      a1[i] = (OSQPFloat)HUGE_VAL;
-      a2[i] = (OSQPFloat)HUGE_VAL;
-      d[i]  = (OSQPFloat)HUGE_VAL;
+    if (invert) {
+      a1[i] /= f1;  a2[i] /= f2;  d[i] /= fd;
+    }
+    else {
+      a1[i] *= f1;  a2[i] *= f2;  d[i] *= fd;
     }
   }
 }
@@ -162,13 +132,14 @@ __global__ void vec_penalty_check_kernel(const OSQPFloat* a1,
   for(OSQPInt i = idx; i < n; i += grid_size) {
     switch (type ? type[i] : default_type) {
       case OSQP_PENALTY_L1L2:
-        if (!(a1[i] >= 0.0) || !(a2[i] >= 0.0))    atomicOr(res, OSQP_PENALTY_ERR_NEGATIVE);
-        else if ((a1[i] <= 0.0) && (a2[i] <= 0.0)) atomicOr(res, OSQP_PENALTY_ERR_ZERO);
+        if (!(a1[i] >= 0.0) || !(a2[i] >= 0.0))            atomicOr(res, OSQP_PENALTY_ERR_NEGATIVE);
+        if ((a1[i] >= OSQP_INFTY) || (a2[i] >= OSQP_INFTY)) atomicOr(res, OSQP_PENALTY_ERR_INFINITE);
         break;
 
       case OSQP_PENALTY_HUBER:
         if (!(a1[i] > 0.0)) atomicOr(res, OSQP_PENALTY_ERR_HUBER_W);
         if (!(d[i]  > 0.0)) atomicOr(res, OSQP_PENALTY_ERR_HUBER_D);
+        if ((a1[i] >= OSQP_INFTY) || (d[i] >= OSQP_INFTY)) atomicOr(res, OSQP_PENALTY_ERR_INFINITE);
         break;
 
       default:
@@ -177,7 +148,8 @@ __global__ void vec_penalty_check_kernel(const OSQPFloat* a1,
   }
 }
 
-__global__ void vec_penalty_flags_kernel(const OSQPFloat* a2,
+__global__ void vec_penalty_flags_kernel(const OSQPFloat* a1,
+                                         const OSQPFloat* a2,
                                          const OSQPInt*   type,
                                          OSQPInt          default_type,
                                          OSQPInt*         res,
@@ -190,7 +162,8 @@ __global__ void vec_penalty_flags_kernel(const OSQPFloat* a2,
     switch (type ? type[i] : default_type) {
       case OSQP_PENALTY_L1L2:
         atomicOr(res, 0x1);
-        if (a2[i] <= 0.0) atomicOr(res, 0x2);
+        /* alpha1 == alpha2 == 0 is the zero penalty, which does not grow */
+        if ((a2[i] <= 0.0) && (a1[i] > 0.0)) atomicOr(res, 0x2);
         break;
 
       case OSQP_PENALTY_HUBER:
@@ -221,7 +194,6 @@ __device__ static OSQPFloat prox_penalty_row(OSQPFloat r,
       return (r > 0.0 ? t : -t) * rho / (rho + a2);
 
     case OSQP_PENALTY_HUBER:
-      if (a1 == (OSQPFloat)HUGE_VAL) return 0.0;
       /* Test the quadratic candidate instead of forming (1 + a1/rho)*d,
          whose intermediate ratio can overflow for finite scaled weights.
          Divide r first for large weights, so rho/(rho+a1) cannot underflow;
@@ -278,12 +250,10 @@ __device__ static OSQPFloat penalty_conj_row(OSQPFloat y,
       /* Pure L1 has an indicator conjugate; an infinite quadratic weight
          has a zero conjugate. Handle both before any division or square. */
       if (a2 <= 0.0) return ay <= a1 ? 0.0 : OSQP_INFTY;
-      if (a2 == (OSQPFloat)HUGE_VAL) return 0.0;
       t = ay - a1;
       return t <= 0.0 ? 0.0 : (0.5 * t) * (t / a2);
 
     case OSQP_PENALTY_HUBER:
-      if (a1 == (OSQPFloat)HUGE_VAL) return 0.0;
       return ay <= a1 * d ? (0.5 * ay) * (ay / a1) : OSQP_INFTY;
 
     default:
@@ -480,6 +450,8 @@ __global__ void vec_bound_kernel(OSQPFloat*       x,
 __global__ void vec_project_polar_reccone_kernel(OSQPFloat*       y,
                                                  const OSQPFloat* l,
                                                  const OSQPFloat* u,
+                                                 const OSQPInt*   type,
+                                                 OSQPInt          default_type,
                                                  OSQPFloat        infval,
                                                  OSQPInt          n) {
 
@@ -487,7 +459,11 @@ __global__ void vec_project_polar_reccone_kernel(OSQPFloat*       y,
   OSQPInt grid_size = blockDim.x * gridDim.x;
 
   for(OSQPInt i = idx; i < n; i += grid_size) {
-    if (u[i] > +infval) {
+    if ((type ? type[i] : default_type) != OSQP_PENALTY_NONE) {
+      /* Soft row: free, so the polar of its recession cone is {0} */
+      y[i] = 0.0;
+    }
+    else if (u[i] > +infval) {
       if (l[i] < -infval) {
         /* Both bounds infinite */
         y[i] = 0.0;
@@ -507,15 +483,24 @@ __global__ void vec_project_polar_reccone_kernel(OSQPFloat*       y,
 __global__ void vec_in_reccone_kernel(const OSQPFloat* y,
                                       const OSQPFloat* l,
                                       const OSQPFloat* u,
-                                            OSQPFloat  infval,
-                                            OSQPFloat  tol,
-                                            OSQPInt*   res,
-                                            OSQPInt    n) {
+                                      const OSQPFloat* alpha2,
+                                      const OSQPInt*   type,
+                                      OSQPInt          default_type,
+                                      OSQPFloat        infval,
+                                      OSQPFloat        tol,
+                                      OSQPInt*         res,
+                                      OSQPInt          n) {
 
   OSQPInt idx = threadIdx.x + blockDim.x * blockIdx.x;
   OSQPInt grid_size = blockDim.x * gridDim.x;
 
   for(OSQPInt i = idx; i < n; i += grid_size) {
+    OSQPInt row_type = type ? type[i] : default_type;
+
+    /* Only a quadratic L1L2 penalty constrains recession directions. */
+    if (row_type != OSQP_PENALTY_NONE &&
+        (row_type != OSQP_PENALTY_L1L2 || !alpha2 || alpha2[i] <= 0.0)) continue;
+
     if ( (u[i] < +infval && y[i] > +tol) ||
          (l[i] > -infval && y[i] < -tol) )
       atomicAnd(res, 0);
@@ -582,6 +567,8 @@ __global__ void vec_min_kernel(OSQPFloat*       c,
 __global__ void vec_bounds_type_kernel(OSQPInt*         iseq,
                                        const OSQPFloat* l,
                                        const OSQPFloat* u,
+                                       const OSQPInt*   type,
+                                       OSQPInt          default_type,
                                        OSQPFloat        infval,
                                        OSQPFloat        tol,
                                        OSQPInt*         has_changed,
@@ -591,7 +578,9 @@ __global__ void vec_bounds_type_kernel(OSQPInt*         iseq,
   OSQPInt grid_size = blockDim.x * gridDim.x;
 
   for(OSQPInt i = idx; i < n; i += grid_size) {
-    if (u[i] - l[i] < tol) {
+    /* A soft row is never an equality however tight its bounds are */
+    if ((u[i] - l[i] < tol) &&
+        ((type ? type[i] : default_type) == OSQP_PENALTY_NONE)) {
       /* Equality constraints */
       if (iseq[i] != 1) {
         iseq[i] = 1;
@@ -899,20 +888,6 @@ void cuda_vec_scale_penalty(OSQPFloat*       d_a1,
   vec_scale_penalty_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_a1, d_a2, d_d, d_type, default_type, c, d_E, invert, n);
 }
 
-void cuda_vec_reset_changed_penalty(OSQPFloat*     d_a1,
-                                    OSQPFloat*     d_a2,
-                                    OSQPFloat*     d_d,
-                                    const OSQPInt* d_old_type,
-                                    OSQPInt        old_default,
-                                    const OSQPInt* d_new_type,
-                                    OSQPInt        new_default,
-                                    OSQPInt        n) {
-
-  OSQPInt number_of_blocks = (n / THREADS_PER_BLOCK) + 1;
-
-  vec_reset_changed_penalty_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_a1, d_a2, d_d, d_old_type, old_default, d_new_type, new_default, n);
-}
-
 void cuda_vec_penalty_check(const OSQPFloat* d_a1,
                             const OSQPFloat* d_a2,
                             const OSQPFloat* d_d,
@@ -932,7 +907,8 @@ void cuda_vec_penalty_check(const OSQPFloat* d_a1,
   checkCudaErrors(cudaMemcpy(h_res, d_res, sizeof(OSQPInt), cudaMemcpyDeviceToHost));
 }
 
-void cuda_vec_penalty_flags(const OSQPFloat* d_a2,
+void cuda_vec_penalty_flags(const OSQPFloat* d_a1,
+                            const OSQPFloat* d_a2,
                             const OSQPInt*   d_type,
                             OSQPInt          default_type,
                             OSQPInt          n,
@@ -944,7 +920,7 @@ void cuda_vec_penalty_flags(const OSQPFloat* d_a2,
   *h_res = 0;
   checkCudaErrors(cudaMemcpy(d_res, h_res, sizeof(OSQPInt), cudaMemcpyHostToDevice));
 
-  vec_penalty_flags_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_a2, d_type, default_type, d_res, n);
+  vec_penalty_flags_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_a1, d_a2, d_type, default_type, d_res, n);
 
   checkCudaErrors(cudaMemcpy(h_res, d_res, sizeof(OSQPInt), cudaMemcpyDeviceToHost));
 }
@@ -1318,21 +1294,26 @@ void cuda_vec_bound(OSQPFloat*       d_x,
 void cuda_vec_project_polar_reccone(OSQPFloat*       d_y,
                                     const OSQPFloat* d_l,
                                     const OSQPFloat* d_u,
+                                    const OSQPInt*   d_type,
+                                    OSQPInt          default_type,
                                     OSQPFloat        infval,
                                     OSQPInt          n) {
 
   OSQPInt number_of_blocks = (n / THREADS_PER_BLOCK) + 1;
 
-  vec_project_polar_reccone_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_y, d_l, d_u, infval, n);
+  vec_project_polar_reccone_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_y, d_l, d_u, d_type, default_type, infval, n);
 }
 
 void cuda_vec_in_reccone(const OSQPFloat* d_y,
                          const OSQPFloat* d_l,
                          const OSQPFloat* d_u,
-                               OSQPFloat  infval,
-                               OSQPFloat  tol,
-                               OSQPInt    n,
-                               OSQPInt*   h_res) {
+                         const OSQPFloat* d_alpha2,
+                         const OSQPInt*   d_type,
+                         OSQPInt          default_type,
+                         OSQPFloat        infval,
+                         OSQPFloat        tol,
+                         OSQPInt          n,
+                         OSQPInt*         h_res) {
 
   OSQPInt *d_res;
   OSQPInt number_of_blocks = (n / THREADS_PER_BLOCK) + 1;
@@ -1343,7 +1324,7 @@ void cuda_vec_in_reccone(const OSQPFloat* d_y,
   *h_res = 1;
   checkCudaErrors(cudaMemcpy(d_res, h_res, sizeof(OSQPInt), cudaMemcpyHostToDevice));
 
-  vec_in_reccone_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_y, d_l, d_u, infval, tol, d_res, n);
+  vec_in_reccone_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_y, d_l, d_u, d_alpha2, d_type, default_type, infval, tol, d_res, n);
 
   checkCudaErrors(cudaMemcpy(h_res, d_res, sizeof(OSQPInt), cudaMemcpyDeviceToHost));
 
@@ -1390,6 +1371,8 @@ void cuda_vec_min(OSQPFloat*       d_c,
 void cuda_vec_bounds_type(OSQPInt*         d_iseq,
                           const OSQPFloat* d_l,
                           const OSQPFloat* d_u,
+                          const OSQPInt*   d_type,
+                          OSQPInt          default_type,
                           OSQPFloat        infval,
                           OSQPFloat        tol,
                           OSQPInt          n,
@@ -1401,7 +1384,7 @@ void cuda_vec_bounds_type(OSQPInt*         d_iseq,
   /* Initialize d_has_changed to zero */
   cuda_calloc((void **) &d_has_changed, sizeof(OSQPInt));
 
-  vec_bounds_type_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_iseq, d_l, d_u, infval, tol, d_has_changed, n);
+  vec_bounds_type_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_iseq, d_l, d_u, d_type, default_type, infval, tol, d_has_changed, n);
 
   checkCudaErrors(cudaMemcpy(h_has_changed, d_has_changed, sizeof(OSQPInt), cudaMemcpyDeviceToHost));
 
@@ -1534,4 +1517,3 @@ void cuda_mat_row_norm_inf(const csr*       S,
 
   cuda_free(&d_buffer);
 }
-

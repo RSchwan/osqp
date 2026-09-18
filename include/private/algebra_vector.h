@@ -222,21 +222,31 @@ void OSQPVectorf_ew_bound_vec(OSQPVectorf*       x,
 
 /* Elementwise projection of y onto the polar recession cone
    of the set [l u].  Values of +/- infval or larger are
-   treated as infinite
+   treated as infinite.
+
+   A soft row is free, so its bounds are ignored and y is set to 0 there.
+   type may be OSQP_NULL, in which case every row takes default_type; passing
+   OSQP_PENALTY_NONE for it means "no soft rows".
  */
 void OSQPVectorf_project_polar_reccone(OSQPVectorf*       y,
                                        const OSQPVectorf* l,
                                        const OSQPVectorf* u,
+                                       const OSQPVectori* type,
+                                       OSQPInt            default_type,
                                        OSQPFloat          infval);
 
 /* Elementwise test of whether y is in the polar recession
    cone of the set [l u].  Values of +/- infval or larger are
    treated as infinite.  Values in y within tol of zero are treated
-   as zero.
+   as zero. A soft row with a positive quadratic L1L2 weight has the same
+   recession cone as a hard row; other soft rows are free.
  */
 OSQPInt OSQPVectorf_in_reccone(const OSQPVectorf* y,
                                const OSQPVectorf* l,
                                const OSQPVectorf* u,
+                               const OSQPVectorf* alpha2,
+                               const OSQPVectori* type,
+                               OSQPInt            default_type,
                                OSQPFloat          infval,
                                OSQPFloat          tol);
 
@@ -321,11 +331,18 @@ void OSQPVectorf_ew_min_vec(OSQPVectorf*       c,
    unless values exceed +/- infval, in which case marked
    as iseq[i] = -1.
 
+   A soft row is never an equality however tight its bounds are, so rows whose
+   penalty type is not OSQP_PENALTY_NONE are classified 0 rather than 1.  They
+   can still be -1.  type may be OSQP_NULL, in which case every row takes
+   default_type; passing OSQP_PENALTY_NONE for it disables the softening.
+
    Returns 1 if any value in iseq has been modified.   O otherwise.
  */
 OSQPInt OSQPVectorf_ew_bounds_type(OSQPVectori*       iseq,
                                    const OSQPVectorf* l,
                                    const OSQPVectorf* u,
+                                   const OSQPVectori* type,
+                                   OSQPInt            default_type,
                                    OSQPFloat          tol,
                                    OSQPFloat          infval);
 
@@ -337,10 +354,10 @@ OSQPInt OSQPVectorf_ew_bounds_type(OSQPVectori*       iseq,
      OSQP_PENALTY_L1L2 : alpha1 *= c/E,    alpha2 *= c/E^2
      OSQP_PENALTY_HUBER: alpha1 *= c/E^2,  delta  *= E
 
-   Rows of type OSQP_PENALTY_NONE are left untouched. Scaling converts the
-   public OSQP_INFTY sentinel to IEEE infinity; unscaling converts it back.
-   Finite scaled values may exceed OSQP_INFTY. E may be NULL for unit scaling.
-   If type is OSQP_NULL every row takes default_type.
+   Rows of type OSQP_PENALTY_NONE are left untouched.  Weights are required to
+   be finite (see OSQPVectorf_penalty_params_check), so this is a plain
+   multiply.  E may be NULL for unit scaling.  If type is OSQP_NULL every row
+   takes default_type.
  */
 void OSQPVectorf_ew_scale_penalty(OSQPVectorf*       alpha1,
                                   OSQPVectorf*       alpha2,
@@ -352,22 +369,9 @@ void OSQPVectorf_ew_scale_penalty(OSQPVectorf*       alpha1,
                                   OSQPInt            invert);
 
 
-/* Reset alpha1/alpha2/delta to IEEE infinity on every row whose penalty type
-   differs between (old_type, old_default) and (new_type, new_default).
-   Either type vector may be OSQP_NULL, in which case the matching default
-   applies to every row.
- */
-void OSQPVectorf_ew_reset_changed_penalty(OSQPVectorf*       alpha1,
-                                          OSQPVectorf*       alpha2,
-                                          OSQPVectorf*       delta,
-                                          const OSQPVectori* old_type,
-                                          OSQPInt            old_default,
-                                          const OSQPVectori* new_type,
-                                          OSQPInt            new_default);
-
 /* Flags returned by OSQPVectorf_penalty_params_check */
 #define OSQP_PENALTY_ERR_NEGATIVE  (0x01)   /* alpha1 or alpha2 negative or NaN */
-#define OSQP_PENALTY_ERR_ZERO      (0x02)   /* L1L2 row with alpha1 == alpha2 == 0 */
+#define OSQP_PENALTY_ERR_INFINITE  (0x02)   /* a weight at or beyond OSQP_INFTY */
 #define OSQP_PENALTY_ERR_HUBER_W   (0x04)   /* Huber row with alpha1 <= 0 */
 #define OSQP_PENALTY_ERR_HUBER_D   (0x08)   /* Huber row with delta <= 0 */
 
@@ -383,10 +387,11 @@ OSQPInt OSQPVectorf_penalty_params_check(const OSQPVectorf* alpha1,
                                          OSQPVectori*       scratch);
 
 /* Summarize the penalty: any_soft is set if any row is not OSQP_PENALTY_NONE,
-   any_linear_growth if any soft row's penalty grows only linearly.
+   any_linear_growth if any soft row's penalty grows exactly linearly.
    scratch is a preallocated one-element integer vector for backend reductions.
  */
-void OSQPVectorf_penalty_flags(const OSQPVectorf* alpha2,
+void OSQPVectorf_penalty_flags(const OSQPVectorf* alpha1,
+                               const OSQPVectorf* alpha2,
                                const OSQPVectori* type,
                                OSQPInt            default_type,
                                OSQPInt*           any_soft,

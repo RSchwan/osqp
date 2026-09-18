@@ -2,6 +2,7 @@ get_directory_property(OSQP_TESTCASE_SRCS DIRECTORY ${PROJECT_SOURCE_DIR}/tests 
 
 set(OSQP_TESTCASE_SRCS
     ${OSQP_TESTCASE_SRCS}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_certificates.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_penalty.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/test_soft_qp.cpp
     PARENT_SCOPE)

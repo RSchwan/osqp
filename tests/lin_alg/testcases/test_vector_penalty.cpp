@@ -84,10 +84,8 @@ TEST_CASE("Vector: Penalty scaling", "[vector],[operation],[penalty]")
 
   SECTION("Unscaling inverts scaling")
   {
-    // A finite weight crosses the public sentinel when scaled; a true hard
-    // weight remains distinguishable and both must return to caller units.
-    a1_val[1] = OSQP_INFTY / 2;
-    a1_val[3] = OSQP_INFTY;
+    // Weights are required to be finite, so scaling is a plain multiply and
+    // the round trip has to return the caller's values
     E_val[1] = 0.0625;
     OSQPVectorf_from_raw(E.get(), E_val);
     OSQPVectorf_from_raw(a1.get(), a1_val);
@@ -96,10 +94,6 @@ TEST_CASE("Vector: Penalty scaling", "[vector],[operation],[penalty]")
 
     OSQPVectorf_ew_scale_penalty(a1.get(), a2.get(), d.get(), type.get(),
                                  OSQP_PENALTY_NONE, c, E.get(), 0);
-    OSQPFloat scaled[4];
-    OSQPVectorf_to_raw(scaled, a1.get());
-    REQUIRE(scaled[1] == 2 * OSQP_INFTY);
-    REQUIRE(scaled[3] == std::numeric_limits<OSQPFloat>::infinity());
     OSQPVectorf_ew_scale_penalty(a1.get(), a2.get(), d.get(), type.get(),
                                  OSQP_PENALTY_NONE, c, E.get(), 1);
 
@@ -116,6 +110,31 @@ TEST_CASE("Vector: Penalty scaling", "[vector],[operation],[penalty]")
               OSQPVectorf_norm_inf_diff(ref.get(), d.get()) < TESTS_TOL);
   }
 
+}
+
+TEST_CASE("Vector: Quadratic penalties constrain recession directions",
+          "[vector],[operation],[penalty]")
+{
+  OSQPFloat y_val[1]  = {1.0};
+  OSQPFloat l_val[1]  = {-OSQP_INFTY};
+  OSQPFloat u_val[1]  = {0.0};
+  OSQPFloat a2_val[1] = {1.0};
+
+  OSQPVectorf_ptr y{OSQPVectorf_new(y_val, 1)};
+  OSQPVectorf_ptr l{OSQPVectorf_new(l_val, 1)};
+  OSQPVectorf_ptr u{OSQPVectorf_new(u_val, 1)};
+  OSQPVectorf_ptr a2{OSQPVectorf_new(a2_val, 1)};
+
+  /* The direction violates the upper-bound recession cone. A quadratic soft
+   * penalty preserves that cone, while a zero penalty makes the row free. */
+  REQUIRE(OSQPVectorf_in_reccone(y.get(), l.get(), u.get(), a2.get(),
+                                 OSQP_NULL, OSQP_PENALTY_L1L2,
+                                 OSQP_INFTY, 0.0) == 0);
+
+  OSQPVectorf_set_scalar(a2.get(), 0.0);
+  REQUIRE(OSQPVectorf_in_reccone(y.get(), l.get(), u.get(), a2.get(),
+                                 OSQP_NULL, OSQP_PENALTY_L1L2,
+                                 OSQP_INFTY, 0.0) == 1);
 }
 
 
@@ -268,7 +287,7 @@ TEST_CASE("Vector: Penalty prox", "[vector],[operation],[penalty]")
     const OSQPFloat large_r = std::numeric_limits<OSQPFloat>::max() / 4;
     OSQPVectorf_set_scalar(v.get(), large_r);
     OSQPVectorf_set_scalar(a1.get(), 1e-6);
-    OSQPVectorf_set_scalar(d.get(), std::numeric_limits<OSQPFloat>::infinity());
+    OSQPVectorf_set_scalar(d.get(), large_r);   /* finite, but never reached */
     OSQPVectorf_ew_prox_penalty(z.get(), v.get(), l.get(), u.get(),
                                 OSQP_NULL, 1e-6, a1.get(), a2.get(), d.get(),
                                 OSQP_NULL, OSQP_PENALTY_HUBER);
@@ -301,46 +320,6 @@ TEST_CASE("Vector: Penalty prox", "[vector],[operation],[penalty]")
       mu_assert("Hard rows are not bit-identical to the projection",
                 got[i] == want[i]);
 
-    // An infinite weight collapses every prox to zero, so a soft row declared
-    // with OSQP_INFTY still behaves as hard (see PROPOSAL.md 2.3)
-    OSQPVectorf_set_scalar(a1.get(), OSQP_INFTY);
-    OSQPVectorf_set_scalar(a2.get(), OSQP_INFTY);
-    OSQPVectorf_set_scalar(d.get(),  OSQP_INFTY);
-
-    OSQPVectorf_ew_prox_penalty(z.get(), v.get(), l.get(), u.get(),
-                                OSQP_NULL, rho, a1.get(), a2.get(), d.get(),
-                                OSQP_NULL, OSQP_PENALTY_L1L2);
-    mu_assert("An infinite L1L2 weight does not behave as a hard row",
-              OSQPVectorf_norm_inf_diff(ref.get(), z.get()) < TESTS_TOL);
-
-    OSQPVectorf_ew_prox_penalty(z.get(), v.get(), l.get(), u.get(),
-                                OSQP_NULL, rho, a1.get(), a2.get(), d.get(),
-                                OSQP_NULL, OSQP_PENALTY_HUBER);
-    mu_assert("An infinite Huber weight does not behave as a hard row",
-              OSQPVectorf_norm_inf_diff(ref.get(), z.get()) < TESTS_TOL);
-
-    // Internally the scaled parameters carry IEEE infinity, not the sentinel
-    OSQPVectorf_set_scalar(a1.get(), std::numeric_limits<OSQPFloat>::infinity());
-    OSQPVectorf_set_scalar(a2.get(), std::numeric_limits<OSQPFloat>::infinity());
-    OSQPVectorf_set_scalar(d.get(),  std::numeric_limits<OSQPFloat>::infinity());
-
-    OSQPVectorf_ew_prox_penalty(z.get(), v.get(), l.get(), u.get(),
-                                OSQP_NULL, rho, a1.get(), a2.get(), d.get(),
-                                OSQP_NULL, OSQP_PENALTY_L1L2);
-    OSQPVectorf_to_raw(got, z.get());
-
-    for (OSQPInt i = 0; i < n; i++)
-      mu_assert("An IEEE infinite L1L2 weight is not exactly the projection",
-                got[i] == want[i]);
-
-    OSQPVectorf_ew_prox_penalty(z.get(), v.get(), l.get(), u.get(),
-                                OSQP_NULL, rho, a1.get(), a2.get(), d.get(),
-                                OSQP_NULL, OSQP_PENALTY_HUBER);
-    OSQPVectorf_to_raw(got, z.get());
-
-    for (OSQPInt i = 0; i < n; i++)
-      mu_assert("An IEEE infinite Huber weight is not exactly the projection",
-                got[i] == want[i]);
   }
 
   SECTION("A per-row type vector matches the uniform calls it mixes")
@@ -455,17 +434,6 @@ TEST_CASE("Vector: Penalty value and conjugate", "[vector],[operation],[penalty]
               OSQPVectorf_penalty_value(s.get(), l.get(), u.get(),
                                         a1.get(), a2.get(), d.get(),
                                         OSQP_NULL, OSQP_PENALTY_NONE,
-                                        scratch.get()) == 0.0);
-
-    // An infinite weight is only well defined because the slack is zero there
-    OSQPVectorf_set_scalar(s.get(), 0.0);
-    OSQPVectorf_set_scalar(a1.get(), std::numeric_limits<OSQPFloat>::infinity());
-    OSQPVectorf_set_scalar(a2.get(), std::numeric_limits<OSQPFloat>::infinity());
-
-    mu_assert("An infinite weight on a zero slack is not zero",
-              OSQPVectorf_penalty_value(s.get(), l.get(), u.get(),
-                                        a1.get(), a2.get(), d.get(),
-                                        OSQP_NULL, OSQP_PENALTY_L1L2,
                                         scratch.get()) == 0.0);
   }
 
@@ -584,10 +552,6 @@ TEST_CASE("Vector: Penalty value and conjugate", "[vector],[operation],[penalty]
       REQUIRE(OSQPVectorf_penalty_conj_value(s.get(), a1.get(), a2.get(),
           d.get(), OSQP_NULL, type, scratch.get()) == Approx(5e14).epsilon(TESTS_TOL));
 
-      OSQPVectorf_set_scalar(type == OSQP_PENALTY_L1L2 ? a2.get() : a1.get(),
-                            std::numeric_limits<OSQPFloat>::infinity());
-      REQUIRE(OSQPVectorf_penalty_conj_value(s.get(), a1.get(), a2.get(),
-          d.get(), OSQP_NULL, type, scratch.get()) == 0.0);
     }
   }
 

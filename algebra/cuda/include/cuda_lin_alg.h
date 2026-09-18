@@ -124,8 +124,8 @@ void cuda_vec_set_sc_cond(OSQPFloat*     d_a,
  *   OSQP_PENALTY_L1L2 : a1 *= c/E,    a2 *= c/E^2
  *   OSQP_PENALTY_HUBER: a1 *= c/E^2,  d  *= E
  *
- * Rows of type OSQP_PENALTY_NONE are untouched. Scaling converts the public
- * OSQP_INFTY sentinel to IEEE infinity; unscaling converts it back.
+ * Rows of type OSQP_PENALTY_NONE are untouched. Weights are required to be
+ * finite, so this is a plain multiply.
  * d_E may be NULL for unit scaling. d_type may be NULL to use default_type.
  */
 void cuda_vec_scale_penalty(OSQPFloat*       d_a1,
@@ -137,18 +137,6 @@ void cuda_vec_scale_penalty(OSQPFloat*       d_a1,
                             const OSQPFloat* d_E,
                             OSQPInt          invert,
                             OSQPInt          n);
-
-/**
- * Reset a1/a2/d to IEEE infinity on every row whose penalty type changes.
- */
-void cuda_vec_reset_changed_penalty(OSQPFloat*     d_a1,
-                                    OSQPFloat*     d_a2,
-                                    OSQPFloat*     d_d,
-                                    const OSQPInt* d_old_type,
-                                    OSQPInt        old_default,
-                                    const OSQPInt* d_new_type,
-                                    OSQPInt        new_default,
-                                    OSQPInt        n);
 
 /**
  * Check penalty parameters against their row types, returning the OR of the
@@ -167,7 +155,8 @@ void cuda_vec_penalty_check(const OSQPFloat* d_a1,
  * Summarize the penalty: bit 0 set if any row is soft, bit 1 if any soft row
  * grows only linearly.
  */
-void cuda_vec_penalty_flags(const OSQPFloat* d_a2,
+void cuda_vec_penalty_flags(const OSQPFloat* d_a1,
+                            const OSQPFloat* d_a2,
                             const OSQPInt*   d_type,
                             OSQPInt          default_type,
                             OSQPInt          n,
@@ -367,6 +356,8 @@ void cuda_vec_bound(OSQPFloat*       d_x,
 void cuda_vec_project_polar_reccone(OSQPFloat*       d_y,
                                     const OSQPFloat* d_l,
                                     const OSQPFloat* d_u,
+                                    const OSQPInt*   d_type,
+                                    OSQPInt          default_type,
                                     OSQPFloat        infval,
                                     OSQPInt          n);
 
@@ -374,14 +365,18 @@ void cuda_vec_project_polar_reccone(OSQPFloat*       d_y,
  *          | d_y[i] \in [-tol,tol]  d_l[i] > -infval AND d_u[i] < +infval
  * h_res = <  d_y[i] < +tol          d_l[i] < -infval AND d_u[i] < +infval
  *          | d_y[i] > -tol          d_l[i] > -infval AND d_u[i] > +infval
+ * Soft rows are skipped unless they are L1L2 with d_alpha2[i] > 0.
  */
 void cuda_vec_in_reccone(const OSQPFloat* d_y,
                          const OSQPFloat* d_l,
                          const OSQPFloat* d_u,
-                               OSQPFloat  infval,
-                               OSQPFloat  tol,
-                               OSQPInt    n,
-                               OSQPInt*   h_res);
+                         const OSQPFloat* d_alpha2,
+                         const OSQPInt*   d_type,
+                         OSQPInt          default_type,
+                         OSQPFloat        infval,
+                         OSQPFloat        tol,
+                         OSQPInt          n,
+                         OSQPInt*         h_res);
 
 /**
  * d_b[i] = 1 / d_a[i] for i in [0,n-1]
@@ -415,6 +410,8 @@ void cuda_vec_min(OSQPFloat*       d_c,
 void cuda_vec_bounds_type(OSQPInt*         d_iseq,
                           const OSQPFloat* d_l,
                           const OSQPFloat* d_u,
+                          const OSQPInt*   d_type,
+                          OSQPInt          default_type,
                           OSQPFloat        infval,
                           OSQPFloat        tol,
                           OSQPInt          n,

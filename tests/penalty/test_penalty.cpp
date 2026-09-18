@@ -55,6 +55,14 @@ public:
   }
 
   OSQPPenaltyData* penalty() { return solver->work->data->penalty; }
+
+  /* Weights are mandatory at setup; these are valid for every type */
+  OSQPInt setup_penalty(OSQPInt default_type, const OSQPInt* type) {
+    std::vector<OSQPFloat> a1(data->m, 1.0), a2(data->m, 1.0), d(data->m, 1.0);
+
+    return osqp_setup_penalty(solver.get(), default_type, type,
+                              a1.data(), a2.data(), d.data());
+  }
 };
 
 } // namespace
@@ -68,12 +76,32 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: allocated only on setup", "[pen
             penalty() == OSQP_NULL);
 
   mu_assert("Penalty: setup failed",
-            osqp_setup_penalty(solver.get(), OSQP_PENALTY_NONE, OSQP_NULL) == 0);
+            setup_penalty(OSQP_PENALTY_NONE, OSQP_NULL) == 0);
   mu_assert("Penalty: setup did not allocate", penalty() != OSQP_NULL);
 
   // Setting up twice is an error, the update functions are for reconfiguring
   mu_assert("Penalty: setup accepted twice",
-            osqp_setup_penalty(solver.get(), OSQP_PENALTY_L1L2, OSQP_NULL) != 0);
+            setup_penalty(OSQP_PENALTY_L1L2, OSQP_NULL) != 0);
+}
+
+TEST_CASE_METHOD(penalty_test_fixture, "Penalty: setup requires weights", "[penalty]")
+{
+  // A soft row is never left without weights, so all three arrays are required
+  std::vector<OSQPFloat> w(data->m, 1.0);
+
+  setup_solver();
+
+  mu_assert("Penalty: setup accepted a missing alpha1",
+            osqp_setup_penalty(solver.get(), OSQP_PENALTY_L1L2, OSQP_NULL,
+                               OSQP_NULL, w.data(), w.data()) != 0);
+  mu_assert("Penalty: setup accepted a missing alpha2",
+            osqp_setup_penalty(solver.get(), OSQP_PENALTY_L1L2, OSQP_NULL,
+                               w.data(), OSQP_NULL, w.data()) != 0);
+  mu_assert("Penalty: setup accepted a missing delta",
+            osqp_setup_penalty(solver.get(), OSQP_PENALTY_HUBER, OSQP_NULL,
+                               w.data(), w.data(), OSQP_NULL) != 0);
+
+  mu_assert("Penalty: allocated by a rejected call", penalty() == OSQP_NULL);
 }
 
 TEST_CASE_METHOD(penalty_test_fixture, "Penalty: type validation", "[penalty]")
@@ -82,9 +110,9 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: type validation", "[penalty]")
 
   SECTION("Invalid default type") {
     mu_assert("Penalty: out-of-range default type accepted",
-              osqp_setup_penalty(solver.get(), 999, OSQP_NULL) != 0);
+              setup_penalty(999, OSQP_NULL) != 0);
     mu_assert("Penalty: negative default type accepted",
-              osqp_setup_penalty(solver.get(), -1, OSQP_NULL) != 0);
+              setup_penalty(-1, OSQP_NULL) != 0);
   }
 
   SECTION("Invalid per-row type") {
@@ -92,7 +120,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: type validation", "[penalty]")
                         42, OSQP_PENALTY_NONE};
 
     mu_assert("Penalty: out-of-range row type accepted",
-              osqp_setup_penalty(solver.get(), OSQP_PENALTY_NONE, types) != 0);
+              setup_penalty(OSQP_PENALTY_NONE, types) != 0);
   }
 
   // A rejected call must not have allocated anything
@@ -118,7 +146,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: parameter validation", "[penalt
   OSQPFloat delta[4]  = {1.0, 1.0, 1.0, 1.0};
 
   SECTION("L1L2") {
-    REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
+    REQUIRE(setup_penalty(OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
 
     SECTION("Negative alpha1 is rejected") {
       alpha1[2] = -1.0;
@@ -140,10 +168,18 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: parameter validation", "[penalt
                 osqp_update_penalty_params(solver.get(), alpha1, alpha2, OSQP_NULL) != 0);
     }
 
-    SECTION("An all-zero row is rejected") {
+    SECTION("An all-zero row is the zero penalty, and is accepted") {
+      // phi = 0 leaves the row unconstrained, which is a legitimate thing to
+      // ask for and needs no special case anywhere
       alpha1[3] = 0.0;
       alpha2[3] = 0.0;
-      mu_assert("Penalty: zero L1L2 penalty accepted",
+      mu_assert("Penalty: zero L1L2 penalty rejected",
+                osqp_update_penalty_params(solver.get(), alpha1, alpha2, OSQP_NULL) == 0);
+    }
+
+    SECTION("An infinite weight is rejected") {
+      alpha2[1] = OSQP_INFTY;
+      mu_assert("Penalty: infinite alpha2 accepted",
                 osqp_update_penalty_params(solver.get(), alpha1, alpha2, OSQP_NULL) != 0);
     }
 
@@ -161,7 +197,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: parameter validation", "[penalt
   }
 
   SECTION("Huber") {
-    REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_HUBER, OSQP_NULL) == 0);
+    REQUIRE(setup_penalty(OSQP_PENALTY_HUBER, OSQP_NULL) == 0);
 
     SECTION("Zero alpha1 is rejected") {
       alpha1[0] = 0.0;
@@ -188,7 +224,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: rejected updates change nothing
   OSQPInt types[4] = {OSQP_PENALTY_L1L2, OSQP_PENALTY_HUBER,
                       OSQP_PENALTY_NONE, OSQP_PENALTY_L1L2};
   OSQPFloat good[4] = {2.0, 3.0, 4.0, 5.0};
-  REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_NONE, types) == 0);
+  REQUIRE(setup_penalty(OSQP_PENALTY_NONE, types) == 0);
   REQUIRE(osqp_update_penalty_params(solver.get(), good, good, good) == 0);
 
   const auto a1 = to_vector(penalty()->alpha1, data->m);
@@ -229,7 +265,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: NULL arguments leave parameters
   OSQPFloat alpha2[4] = {5.0, 6.0, 7.0, 8.0};
   OSQPFloat alpha2b[4] = {9.0, 9.0, 9.0, 9.0};
 
-  REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
+  REQUIRE(setup_penalty(OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
   REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, alpha2, OSQP_NULL) == 0);
 
   const auto before = to_vector(penalty()->alpha1, data->m);
@@ -261,7 +297,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: uniform and per-row agree", "[p
 
   setup_solver();
 
-  REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
+  REQUIRE(setup_penalty(OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
   REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, alpha2, OSQP_NULL) == 0);
 
   mu_assert("Penalty: uniform flag not set", penalty()->uniform == 1);
@@ -298,43 +334,42 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: uniform and per-row agree", "[p
   mu_assert("Penalty: uniform flag not restored", penalty()->uniform == 1);
 }
 
-TEST_CASE_METHOD(penalty_test_fixture, "Penalty: changing a type resets its parameters", "[penalty]")
+TEST_CASE_METHOD(penalty_test_fixture, "Penalty: a type change keeps the weights", "[penalty]")
 {
-  settings->scaling = 0;   // Compare the stored parameters in the user's units
+  OSQPInt   types[4]  = {OSQP_PENALTY_L1L2, OSQP_PENALTY_L1L2,
+                         OSQP_PENALTY_L1L2, OSQP_PENALTY_L1L2};
+  OSQPFloat alpha1[4] = {1.0, 2.0, 3.0, 4.0};
+  OSQPFloat alpha2[4] = {0.5, 1.5, 2.5, 3.5};
+
+  settings->scaling = 10;
   setup_solver();
 
-  OSQPFloat alpha1[4] = {1.0, 2.0, 3.0, 4.0};
-  OSQPFloat alpha2[4] = {5.0, 6.0, 7.0, 8.0};
+  REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_NONE, types,
+                             alpha1, alpha2, alpha1) == 0);
 
-  OSQPInt types[4] = {OSQP_PENALTY_L1L2, OSQP_PENALTY_L1L2,
-                      OSQP_PENALTY_L1L2, OSQP_PENALTY_L1L2};
-
-  REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_NONE, types) == 0);
-  REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, alpha2, alpha1) == 0);
-
-  // Change the type of rows 1 and 2 only
+  // Change the type of rows 1 and 2 only. The stored weights are valid for the
+  // new types, so the call succeeds and leaves every weight untouched.
   types[1] = OSQP_PENALTY_HUBER;
   types[2] = OSQP_PENALTY_NONE;
   REQUIRE(osqp_update_penalty_types(solver.get(), OSQP_PENALTY_NONE, types) == 0);
 
-  std::vector<OSQPFloat> a1 = to_vector(penalty()->alpha1, data->m);
-  std::vector<OSQPFloat> a2 = to_vector(penalty()->alpha2, data->m);
+  const auto a1 = to_vector(penalty()->alpha1, data->m);
+  const auto a2 = to_vector(penalty()->alpha2, data->m);
+  const auto d  = to_vector(penalty()->delta,  data->m);
+  const auto E  = to_vector(solver->work->scaling->E, data->m);
+  const auto c  = solver->work->scaling->c;
 
-  const auto d = to_vector(penalty()->delta, data->m);
-  REQUIRE(d[0] == alpha1[0]);
-  REQUIRE(d[3] == alpha1[3]);
-  REQUIRE(d[1] == std::numeric_limits<OSQPFloat>::infinity());
-  REQUIRE(d[2] == std::numeric_limits<OSQPFloat>::infinity());
-
-  mu_assert("Penalty: unchanged row lost its alpha1", a1[0] == alpha1[0]);
-  mu_assert("Penalty: unchanged row lost its alpha2", a2[0] == alpha2[0]);
-  mu_assert("Penalty: unchanged row lost its alpha1", a1[3] == alpha1[3]);
-  mu_assert("Penalty: unchanged row lost its alpha2", a2[3] == alpha2[3]);
-
-  mu_assert("Penalty: changed row kept its alpha1", a1[1] == std::numeric_limits<OSQPFloat>::infinity());
-  mu_assert("Penalty: changed row kept its alpha2", a2[1] == std::numeric_limits<OSQPFloat>::infinity());
-  mu_assert("Penalty: changed row kept its alpha1", a1[2] == std::numeric_limits<OSQPFloat>::infinity());
-  mu_assert("Penalty: changed row kept its alpha2", a2[2] == std::numeric_limits<OSQPFloat>::infinity());
+  /* Rows 0 and 3 stay L1L2. Row 1 changes to Huber, and row 2 becomes hard.
+   * Every row must retain the caller's weights under its new scaling rule. */
+  for (OSQPInt i : {0, 3}) {
+    REQUIRE(a1[i] == Approx(c * alpha1[i] / E[i]).epsilon(TESTS_TOL));
+    REQUIRE(a2[i] == Approx(c * alpha2[i] / (E[i] * E[i])).epsilon(TESTS_TOL));
+  }
+  REQUIRE(a1[1] == Approx(c * alpha1[1] / (E[1] * E[1])).epsilon(TESTS_TOL));
+  REQUIRE(d[1] == Approx(alpha1[1] * E[1]).epsilon(TESTS_TOL));
+  REQUIRE(a1[2] == alpha1[2]);
+  REQUIRE(a2[2] == alpha2[2]);
+  REQUIRE(d[2] == alpha1[2]);
 }
 
 TEST_CASE_METHOD(penalty_test_fixture, "Penalty: summary flags", "[penalty]")
@@ -346,7 +381,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: summary flags", "[penalty]")
   OSQPFloat delta[4]  = {1.0, 1.0, 1.0, 1.0};
 
   SECTION("Elastic net is soft and superlinear") {
-    REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
+    REQUIRE(setup_penalty(OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
     REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, alpha2, OSQP_NULL) == 0);
 
     mu_assert("Penalty: any_soft not set", solver->work->penalty_any_soft == 1);
@@ -357,7 +392,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: summary flags", "[penalty]")
   SECTION("Pure L1 grows linearly") {
     for (int i = 0; i < 4; i++) alpha2[i] = 0.0;
 
-    REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
+    REQUIRE(setup_penalty(OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
     REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, alpha2, OSQP_NULL) == 0);
 
     mu_assert("Penalty: any_soft not set", solver->work->penalty_any_soft == 1);
@@ -368,7 +403,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: summary flags", "[penalty]")
   SECTION("A single pure-L1 row is enough") {
     alpha2[2] = 0.0;
 
-    REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
+    REQUIRE(setup_penalty(OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
     REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, alpha2, OSQP_NULL) == 0);
 
     mu_assert("Penalty: a single linear-growth row was missed",
@@ -376,7 +411,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: summary flags", "[penalty]")
   }
 
   SECTION("Huber grows linearly") {
-    REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_HUBER, OSQP_NULL) == 0);
+    REQUIRE(setup_penalty(OSQP_PENALTY_HUBER, OSQP_NULL) == 0);
     REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, OSQP_NULL, delta) == 0);
 
     mu_assert("Penalty: any_soft not set", solver->work->penalty_any_soft == 1);
@@ -388,7 +423,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: summary flags", "[penalty]")
     OSQPInt types[4] = {OSQP_PENALTY_NONE, OSQP_PENALTY_NONE,
                         OSQP_PENALTY_L1L2, OSQP_PENALTY_NONE};
 
-    REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_NONE, types) == 0);
+    REQUIRE(setup_penalty(OSQP_PENALTY_NONE, types) == 0);
     REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, alpha2, OSQP_NULL) == 0);
 
     mu_assert("Penalty: any_soft not set for a partially soft problem",
@@ -417,7 +452,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: parameter scaling", "[penalty]"
     settings->scaling = 10;
     setup_solver();
 
-    REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_NONE, types) == 0);
+    REQUIRE(setup_penalty(OSQP_PENALTY_NONE, types) == 0);
     REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, alpha2, delta) == 0);
 
     std::vector<OSQPFloat> E = to_vector(solver->work->scaling->E, data->m);
@@ -454,7 +489,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: parameter scaling", "[penalty]"
     settings->scaling = 0;
     setup_solver();
 
-    REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_NONE, types) == 0);
+    REQUIRE(setup_penalty(OSQP_PENALTY_NONE, types) == 0);
     REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, alpha2, delta) == 0);
 
     std::vector<OSQPFloat> a1 = to_vector(penalty()->alpha1, data->m);
@@ -469,28 +504,6 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: parameter scaling", "[penalty]"
   }
 }
 
-TEST_CASE_METHOD(penalty_test_fixture, "Penalty: infinite weights survive scaling", "[penalty]")
-{
-  /* OSQP_INFTY marks a row that is soft in type but hard in effect. Scaling
-   * must not turn it into a merely large finite number. */
-  OSQPFloat alpha1[4] = {OSQP_INFTY, OSQP_INFTY, OSQP_INFTY, OSQP_INFTY};
-  OSQPFloat alpha2[4] = {OSQP_INFTY, OSQP_INFTY, OSQP_INFTY, OSQP_INFTY};
-
-  settings->scaling = 10;
-  setup_solver();
-
-  REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
-  REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, alpha2, OSQP_NULL) == 0);
-
-  std::vector<OSQPFloat> a1 = to_vector(penalty()->alpha1, data->m);
-  std::vector<OSQPFloat> a2 = to_vector(penalty()->alpha2, data->m);
-
-  for (OSQPInt i = 0; i < data->m; i++) {
-    mu_assert("Penalty: infinite alpha1 lost through scaling", a1[i] >= OSQP_INFTY);
-    mu_assert("Penalty: infinite alpha2 lost through scaling", a2[i] >= OSQP_INFTY);
-  }
-}
-
 TEST_CASE_METHOD(penalty_test_fixture, "Penalty: scaled parameters survive a matrix update", "[penalty]")
 {
   OSQPInt types[4] = {OSQP_PENALTY_NONE, OSQP_PENALTY_L1L2,
@@ -501,7 +514,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: scaled parameters survive a mat
 
   settings->scaling = 10;
   setup_solver();
-  REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_NONE, types) == 0);
+  REQUIRE(setup_penalty(OSQP_PENALTY_NONE, types) == 0);
   REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, alpha2, delta) == 0);
   const auto old_E = to_vector(solver->work->scaling->E, data->m);
   REQUIRE(to_vector(penalty()->alpha1, data->m)[3] > OSQP_INFTY);

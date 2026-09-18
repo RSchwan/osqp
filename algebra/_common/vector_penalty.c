@@ -30,7 +30,6 @@ static OSQPFloat ew_prox_penalty_row(OSQPFloat r,
       return (r > 0.0 ? t : -t) * rho / (rho + a2);
 
     case OSQP_PENALTY_HUBER:
-      if (a1 == (OSQPFloat)HUGE_VAL) return 0.0;
       /* Test the quadratic candidate instead of forming (1 + a1/rho)*d,
          whose intermediate ratio can overflow for finite scaled weights.
          Divide r first for large weights, so rho/(rho+a1) cannot underflow;
@@ -87,12 +86,10 @@ static OSQPFloat penalty_conj_row(OSQPFloat y,
       /* Pure L1 has an indicator conjugate; an infinite quadratic weight
          has a zero conjugate. Handle both before any division or square. */
       if (a2 <= 0.0) return ay <= a1 ? 0.0 : OSQP_INFTY;
-      if (a2 == (OSQPFloat)HUGE_VAL) return 0.0;
       t = ay - a1;
       return t <= 0.0 ? 0.0 : (0.5 * t) * (t / a2);
 
     case OSQP_PENALTY_HUBER:
-      if (a1 == (OSQPFloat)HUGE_VAL) return 0.0;
       return ay <= a1 * d ? (0.5 * ay) * (ay / a1) : OSQP_INFTY;
 
     default:
@@ -209,16 +206,6 @@ OSQPFloat OSQPVectorf_penalty_conj_value(const OSQPVectorf* y,
 
 #if OSQP_EMBEDDED_MODE != 1
 
-/* Convert the public infinity sentinel at the scaling boundary. Finite scaled
- * weights may exceed OSQP_INFTY and must survive the inverse transform. */
-static OSQPFloat ew_scale_penalty_weight(OSQPFloat weight,
-                                         OSQPFloat factor,
-                                         OSQPInt invert) {
-  if (invert)
-    return weight == (OSQPFloat)HUGE_VAL ? OSQP_INFTY : weight / factor;
-
-  return weight >= OSQP_INFTY ? (OSQPFloat)HUGE_VAL : weight * factor;
-}
 void OSQPVectorf_ew_scale_penalty(OSQPVectorf*       alpha1,
                                   OSQPVectorf*       alpha2,
                                   OSQPVectorf*       delta,
@@ -253,35 +240,11 @@ void OSQPVectorf_ew_scale_penalty(OSQPVectorf*       alpha1,
         continue;   // Hard row, parameters unused
     }
 
-    a1[i] = ew_scale_penalty_weight(a1[i], f1, invert);
-    a2[i] = ew_scale_penalty_weight(a2[i], f2, invert);
-    d[i]  = ew_scale_penalty_weight(d[i],  fd, invert);
-  }
-}
-void OSQPVectorf_ew_reset_changed_penalty(OSQPVectorf*       alpha1,
-                                          OSQPVectorf*       alpha2,
-                                          OSQPVectorf*       delta,
-                                          const OSQPVectori* old_type,
-                                          OSQPInt            old_default,
-                                          const OSQPVectori* new_type,
-                                          OSQPInt            new_default) {
-
-  OSQPInt    i;
-  OSQPInt    length = alpha1->length;
-  OSQPFloat* a1     = alpha1->values;
-  OSQPFloat* a2     = alpha2->values;
-  OSQPFloat* d      = delta->values;
-  OSQPInt*   ot     = old_type ? old_type->values : OSQP_NULL;
-  OSQPInt*   nt     = new_type ? new_type->values : OSQP_NULL;
-
-  for (i = 0; i < length; i++) {
-    OSQPInt told = ot ? ot[i] : old_default;
-    OSQPInt tnew = nt ? nt[i] : new_default;
-
-    if (told != tnew) {
-      a1[i] = (OSQPFloat)HUGE_VAL;
-      a2[i] = (OSQPFloat)HUGE_VAL;
-      d[i]  = (OSQPFloat)HUGE_VAL;
+    if (invert) {
+      a1[i] /= f1;  a2[i] /= f2;  d[i] /= fd;
+    }
+    else {
+      a1[i] *= f1;  a2[i] *= f2;  d[i] *= fd;
     }
   }
 }
@@ -306,13 +269,14 @@ OSQPInt OSQPVectorf_penalty_params_check(const OSQPVectorf* alpha1,
   for (i = 0; i < length; i++) {
     switch (tv ? tv[i] : default_type) {
       case OSQP_PENALTY_L1L2:
-        if (!(a1[i] >= 0.0) || !(a2[i] >= 0.0))      flags |= OSQP_PENALTY_ERR_NEGATIVE;
-        else if ((a1[i] <= 0.0) && (a2[i] <= 0.0))   flags |= OSQP_PENALTY_ERR_ZERO;
+        if (!(a1[i] >= 0.0) || !(a2[i] >= 0.0))          flags |= OSQP_PENALTY_ERR_NEGATIVE;
+        if ((a1[i] >= OSQP_INFTY) || (a2[i] >= OSQP_INFTY)) flags |= OSQP_PENALTY_ERR_INFINITE;
         break;
 
       case OSQP_PENALTY_HUBER:
         if (!(a1[i] > 0.0)) flags |= OSQP_PENALTY_ERR_HUBER_W;
         if (!(d[i]  > 0.0)) flags |= OSQP_PENALTY_ERR_HUBER_D;
+        if ((a1[i] >= OSQP_INFTY) || (d[i] >= OSQP_INFTY)) flags |= OSQP_PENALTY_ERR_INFINITE;
         break;
 
       default:
@@ -322,7 +286,8 @@ OSQPInt OSQPVectorf_penalty_params_check(const OSQPVectorf* alpha1,
 
   return flags;
 }
-void OSQPVectorf_penalty_flags(const OSQPVectorf* alpha2,
+void OSQPVectorf_penalty_flags(const OSQPVectorf* alpha1,
+                               const OSQPVectorf* alpha2,
                                const OSQPVectori* type,
                                OSQPInt            default_type,
                                OSQPInt*           any_soft,
@@ -331,6 +296,7 @@ void OSQPVectorf_penalty_flags(const OSQPVectorf* alpha2,
 
   OSQPInt    i;
   OSQPInt    length = alpha2->length;
+  OSQPFloat* a1     = alpha1->values;
   OSQPFloat* a2     = alpha2->values;
   OSQPInt*   tv     = type ? type->values : OSQP_NULL;
 
@@ -346,7 +312,8 @@ void OSQPVectorf_penalty_flags(const OSQPVectorf* alpha2,
     switch (tv ? tv[i] : default_type) {
       case OSQP_PENALTY_L1L2:
         *any_soft = 1;
-        if (a2[i] <= 0.0) *any_linear_growth = 1;
+        /* alpha1 == alpha2 == 0 is the zero penalty, which does not grow */
+        if ((a2[i] <= 0.0) && (a1[i] > 0.0)) *any_linear_growth = 1;
         break;
 
       case OSQP_PENALTY_HUBER:

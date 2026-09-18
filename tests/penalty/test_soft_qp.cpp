@@ -194,9 +194,8 @@ std::vector<OSQPFloat> solve_soft(const Problem&              prob,
   mu_assert("Soft QP: penalty setup error",
             osqp_setup_penalty(solver.get(),
                                opts.uniform ? type[0] : OSQP_PENALTY_NONE,
-                               opts.uniform ? OSQP_NULL : type.data()) == 0);
-  mu_assert("Soft QP: penalty parameter error",
-            osqp_update_penalty_params(solver.get(), a1.data(), a2.data(), dl.data()) == 0);
+                               opts.uniform ? OSQP_NULL : type.data(),
+                               a1.data(), a2.data(), dl.data()) == 0);
 
   mu_assert("Soft QP: solve error", osqp_solve(solver.get()) == 0);
   mu_assert("Soft QP: not solved", solver->info->status_val == OSQP_SOLVED);
@@ -480,36 +479,33 @@ TEST_CASE("Soft QP: per-row penalty types", "[penalty],[solve]")
                       {0.0, -0.335714285781, -0.735714285531}}, opts);
 }
 
-TEST_CASE("Soft QP: an infinite weight reproduces the hard problem", "[penalty],[solve]")
+TEST_CASE("Soft QP: a large weight approaches the hard problem", "[penalty],[solve]")
 {
-  // Every prox degrades to zero as its weight grows, so infinite weights must
-  // reproduce the hard QP exactly (PROPOSAL.md 2.3)
+  // Every prox degrades to zero as its weight grows, so penalty continuation is
+  // well defined and its limit is the hard QP. Infinite weights are rejected --
+  // a hard row is spelled OSQP_PENALTY_NONE -- so the limit is approached with
+  // a large finite weight instead.
   const Reference hard{{0.04, 0.36}, {0.0, 0.0, 1.92}, {0.0, 0.0, 0.0}};
 
   Options opts;
   Problem prob{opts};
   std::vector<OSQPFloat> y_soft;
 
-  std::vector<OSQPFloat> x_soft = solve_soft(prob,
-      {{OSQP_PENALTY_L1L2,  OSQP_INFTY, OSQP_INFTY, 1.0},
-       {OSQP_PENALTY_HUBER, OSQP_INFTY, 0.0,        OSQP_INFTY},
-       {OSQP_PENALTY_L1L2,  OSQP_INFTY, OSQP_INFTY, 1.0}}, opts, y_soft);
-
-#ifndef OSQP_USE_FLOAT
-  std::vector<OSQPFloat> y_ref, xi_ref;
-  std::vector<OSQPFloat> x_ref = solve_lifted(prob,
-      {{OSQP_PENALTY_NONE, 0.0, 0.0, 0.0},
-       {OSQP_PENALTY_NONE, 0.0, 0.0, 0.0},
-       {OSQP_PENALTY_NONE, 0.0, 0.0, 0.0}}, y_ref, xi_ref);
-
-  mu_assert("The stored hard reference no longer matches",
-            vec_norm_inf_diff(x_ref.data(), hard.x, prob.n) < REF_TOL);
-  mu_assert("The stored hard reference dual no longer matches",
-            vec_norm_inf_diff(y_ref.data(), hard.y, prob.m) < REF_TOL);
+#ifdef OSQP_USE_FLOAT
+  const OSQPFloat big = 1e4;
+  const OSQPFloat tol = 2e-3;
+#else
+  const OSQPFloat big = 1e8;
+  const OSQPFloat tol = 1e-5;
 #endif
 
-  mu_assert("An infinite weight does not reproduce the hard problem",
-            vec_norm_inf_diff(x_soft.data(), hard.x, prob.n) < COMPARE_TOL);
-  mu_assert("An infinite weight does not reproduce the hard dual",
-            vec_norm_inf_diff(y_soft.data(), hard.y, prob.m) < COMPARE_TOL);
+  std::vector<OSQPFloat> x_soft = solve_soft(prob,
+      {{OSQP_PENALTY_L1L2,  0.0, big, 1.0},
+       {OSQP_PENALTY_HUBER, big, 0.0, 1.0},
+       {OSQP_PENALTY_L1L2,  0.0, big, 1.0}}, opts, y_soft);
+
+  mu_assert("A large weight does not approach the hard problem",
+            vec_norm_inf_diff(x_soft.data(), hard.x, prob.n) < tol);
+  mu_assert("A large weight does not approach the hard dual",
+            vec_norm_inf_diff(y_soft.data(), hard.y, prob.m) < tol);
 }

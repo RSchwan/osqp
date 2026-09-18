@@ -513,6 +513,8 @@ void OSQPVectorf_ew_bound_vec(OSQPVectorf*       x,
 void OSQPVectorf_project_polar_reccone(OSQPVectorf*       y,
                                        const OSQPVectorf* l,
                                        const OSQPVectorf* u,
+                                       const OSQPVectori* type,
+                                       OSQPInt            default_type,
                                        OSQPFloat          infval) {
 
   OSQPInt i; // Index for loops
@@ -521,9 +523,13 @@ void OSQPVectorf_project_polar_reccone(OSQPVectorf*       y,
   OSQPFloat* yv = y->values;
   OSQPFloat* lv = l->values;
   OSQPFloat* uv = u->values;
+  OSQPInt*   tv = type ? type->values : OSQP_NULL;
 
   for (i = 0; i < length; i++) {
-    if (uv[i]   > +infval) {       // Infinite upper bound
+    if ((tv ? tv[i] : default_type) != OSQP_PENALTY_NONE) {
+      // Soft row: free, so the polar of its recession cone is {0}
+      yv[i] = 0.0;
+    } else if (uv[i] > +infval) {  // Infinite upper bound
       if (lv[i] < -infval) {       // Infinite lower bound
         // Both bounds infinite
         yv[i] = 0.0;
@@ -541,6 +547,9 @@ void OSQPVectorf_project_polar_reccone(OSQPVectorf*       y,
 OSQPInt OSQPVectorf_in_reccone(const OSQPVectorf* y,
                                const OSQPVectorf* l,
                                const OSQPVectorf* u,
+                               const OSQPVectorf* alpha2,
+                               const OSQPVectori* type,
+                               OSQPInt            default_type,
                                OSQPFloat          infval,
                                OSQPFloat          tol) {
 
@@ -550,8 +559,16 @@ OSQPInt OSQPVectorf_in_reccone(const OSQPVectorf* y,
   OSQPFloat* yv = y->values;
   OSQPFloat* lv = l->values;
   OSQPFloat* uv = u->values;
+  OSQPFloat* a2 = alpha2 ? alpha2->values : OSQP_NULL;
+  OSQPInt*   tv = type ? type->values : OSQP_NULL;
 
   for (i = 0; i < length; i++) {
+    OSQPInt row_type = tv ? tv[i] : default_type;
+
+    /* Only a quadratic L1L2 penalty constrains recession directions. */
+    if (row_type != OSQP_PENALTY_NONE &&
+        (row_type != OSQP_PENALTY_L1L2 || !a2 || a2[i] <= 0.0)) continue;
+
     if (((uv[i] < +infval) &&
          (yv[i] > +tol)) ||
         ((lv[i] > -infval) &&
@@ -670,6 +687,8 @@ void OSQPVectorf_ew_min_vec(OSQPVectorf*       c,
 OSQPInt OSQPVectorf_ew_bounds_type(OSQPVectori*       iseq,
                                    const OSQPVectorf* l,
                                    const OSQPVectorf* u,
+                                   const OSQPVectori* type,
+                                   OSQPInt            default_type,
                                    OSQPFloat          tol,
                                    OSQPFloat          infval) {
 
@@ -681,6 +700,7 @@ OSQPInt OSQPVectorf_ew_bounds_type(OSQPVectori*       iseq,
 
   OSQPFloat* lv = l->values;
   OSQPFloat* uv = u->values;
+  OSQPInt*   tv = type ? type->values : OSQP_NULL;
 
   for (i = 0; i < length; i++) {
 
@@ -689,7 +709,8 @@ OSQPInt OSQPVectorf_ew_bounds_type(OSQPVectori*       iseq,
     if ((lv[i] < -infval) && (uv[i] > infval)) {
       // Loose bounds
       iseqv[i] = -1;
-    } else if (uv[i] - lv[i] < tol) {
+    } else if ((uv[i] - lv[i] < tol) &&
+               ((tv ? tv[i] : default_type) == OSQP_PENALTY_NONE)) {
       // Equality constraints
       iseqv[i] = 1;
     } else {

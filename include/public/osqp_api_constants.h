@@ -65,12 +65,12 @@ enum osqp_linsys_solver_type {
 **********************************/
 /**
  * Penalty phi applied to the slack of a soft row l <= a'x + xi <= u.
- * The alpha1/alpha2/delta parameters are set per row with osqp_update_penalty_params.
+ * The alpha1/alpha2/delta weights are set per row by osqp_setup_penalty.
  */
 enum osqp_penalty_type {
-    OSQP_PENALTY_NONE = 0,  /**< Hard constraint */
-    OSQP_PENALTY_L1L2,      /**< phi(s) = alpha1*|s| + (alpha2/2)*s^2; L1, quadratic and elastic net */
-    OSQP_PENALTY_HUBER      /**< phi(s) = alpha1*h_delta(s), Huber loss with transition point delta */
+    OSQP_PENALTY_NONE = 0,  /**< Hard constraint; no weights used */
+    OSQP_PENALTY_L1L2,      /**< phi(s) = alpha1*|s| + (alpha2/2)*s^2, alpha1 >= 0, alpha2 >= 0; L1, quadratic and elastic net */
+    OSQP_PENALTY_HUBER      /**< phi(s) = alpha1*h_delta(s), alpha1 > 0, delta > 0; Huber loss with transition point delta */
 };
 
 /*********************************

@@ -19,6 +19,18 @@ void penalty_project(OSQPSolver*        solver,
                      OSQPVectorf*       z,
                      const OSQPVectorf* v);
 
+/**
+ * Per-row penalty types, or OSQP_NULL when every row uses the default.
+ * @param  solver Solver
+ */
+const OSQPVectori* penalty_row_types(const OSQPSolver* solver);
+
+/**
+ * Penalty type of the rows not covered by penalty_row_types()
+ * @param  solver Solver
+ */
+OSQPInt penalty_default_type(const OSQPSolver* solver);
+
 # if OSQP_EMBEDDED_MODE != 1
 
 /**

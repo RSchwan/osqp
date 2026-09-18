@@ -83,9 +83,13 @@ OSQPInt set_rho_vec(OSQPSolver* solver) {
 
   settings->rho = c_min(c_max(settings->rho, OSQP_RHO_MIN), OSQP_RHO_MAX);
 
+  /* NB: the soft mask goes into the classification rather than being applied
+     afterwards, so that the "did anything change?" return value stays exact */
   constr_types_changed = OSQPVectorf_ew_bounds_type(work->constr_type,
                                                     work->data->l,
                                                     work->data->u,
+                                                    penalty_row_types(solver),
+                                                    penalty_default_type(solver),
                                                     OSQP_RHO_TOL,
                                                     OSQP_INFTY * OSQP_MIN_SCALING);
 
@@ -246,16 +250,21 @@ void compute_obj_val_dual_gap(const OSQPSolver*  solver,
 
   /* Compute the support function of the constraints, SC(y) = u'*max(y, 0) + l'*min(y, 0)
      by projecting y onto the polar of the recession cone of C=[l,u], then doing the dot products */
+  /* Soft rows are free here: a finitely penalized row contributes Phi*(y), not
+     a support-function term (chunk 5 adds it) */
   OSQPVectorf_copy(work->z_prev, y);
   OSQPVectorf_project_polar_reccone(work->z_prev,
                                     work->data->l,
                                     work->data->u,
+                                    penalty_row_types(solver),
+                                    penalty_default_type(solver),
                                     OSQP_INFTY * OSQP_MIN_SCALING);
 
   // Round anything in the range [-OSQP_ZERO_DEADZONE, OSQP_ZERO_DEADZONE] to 0 to
   // prevent very small (i.e., 1e-20) values from blowing up the numerics.
   OSQPVectorf_round_to_zero(work->z_prev, OSQP_ZERO_DEADZONE);
 
+  /* NB: soft rows need no special case here, the projection above zeroed them */
   sup_term  = OSQPVectorf_dot_prod_signed(work->data->u, work->z_prev, +1);
   sup_term += OSQPVectorf_dot_prod_signed(work->data->l, work->z_prev, -1);
 
@@ -471,10 +480,14 @@ OSQPInt is_primal_infeasible(OSQPSolver* solver,
   OSQPSettings*  settings = solver->settings;
   OSQPWorkspace* work     = solver->work;
 
-  // Project delta_y onto the polar of the recession cone of C=[l,u]
+  /* Project delta_y onto the polar of the recession cone of C=[l,u].
+     Soft rows are treated as free: the soft problem is infeasible if and only
+     if the hard subsystem is, so a certificate may only use hard rows. */
   OSQPVectorf_project_polar_reccone(work->delta_y,
                                     work->data->l,
                                     work->data->u,
+                                    penalty_row_types(solver),
+                                    penalty_default_type(solver),
                                     OSQP_INFTY * OSQP_MIN_SCALING);
 
   // Compute infinity norm of delta_y (unscale if necessary)
@@ -490,6 +503,7 @@ OSQPInt is_primal_infeasible(OSQPSolver* solver,
 
   if (norm_delta_y > OSQP_DIVISION_TOL) {
 
+    /* NB: soft rows need no special case here, the projection above zeroed them */
     ineq_lhs  = OSQPVectorf_dot_prod_signed(work->data->u, work->delta_y, +1);
     ineq_lhs += OSQPVectorf_dot_prod_signed(work->data->l, work->delta_y, -1);
 
@@ -526,6 +540,11 @@ OSQPInt is_dual_infeasible(OSQPSolver* solver,
   OSQPFloat cost_scaling;
   OSQPSettings*  settings = solver->settings;
   OSQPWorkspace* work     = solver->work;
+
+  /* A penalty growing only linearly bounds the rate at which the objective can
+     fall along a ray, so the exact test needs an extra term (PROPOSAL.md 2.7).
+     Until that lands, do not declare dual infeasibility at all. */
+  if (work->penalty_any_linear_growth) return 0;
 
   // Compute norm of delta_x
   if (settings->scaling && !settings->scaled_termination) { // Unscale if needed
@@ -575,9 +594,16 @@ OSQPInt is_dual_infeasible(OSQPSolver* solver,
 
         // If you get this far, then all tests passed, so return results from final test
         // Test whether Adelta_x is in the recession cone of C = [l, u]
+        /* Linear-growth rows are excluded above. A quadratic L1L2 row retains
+           the bound recession cone, while a zero-penalty row is free. */
         return OSQPVectorf_in_reccone(work->Adelta_x,
                                       work->data->l,
                                       work->data->u,
+                                      work->data->penalty
+                                        ? work->data->penalty->alpha2
+                                        : OSQP_NULL,
+                                      penalty_row_types(solver),
+                                      penalty_default_type(solver),
                                       OSQP_INFTY * OSQP_MIN_SCALING,
                                       eps_dual_inf * norm_delta_x);
       }
