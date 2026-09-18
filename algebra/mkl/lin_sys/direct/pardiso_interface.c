@@ -121,6 +121,18 @@ OSQPInt init_linsys_solver_pardiso(pardiso_solver**    sp,
   }
   // else it is NULL
 
+  // Use s->rho_inv_vec for storing param2 = rho_inv_vec.
+  // NB: polish() supplies it too, to put a per-row value on the (2,2) block.
+  if (rho_vec) {
+      rhov = rho_vec->values;
+      for (i = 0; i < m; i++){
+          s->rho_inv_vec[i] = 1. / rhov[i];
+      }
+  }
+  else {
+    s->rho_inv = 1. / settings->rho;
+  }
+
   // Form KKT matrix
   if (polishing){ // Called from polish()
     s->KKT = form_KKT(P->csc,A->csc,
@@ -134,17 +146,6 @@ OSQPInt init_linsys_solver_pardiso(pardiso_solver**    sp,
     s->PtoKKT   = c_malloc(P->csc->p[n] * sizeof(OSQPInt));
     s->AtoKKT   = c_malloc(A->csc->p[n] * sizeof(OSQPInt));
     s->rhotoKKT = c_malloc(m * sizeof(OSQPInt));
-
-    // Use s->rho_inv_vec for storing param2 = rho_inv_vec
-    if (rho_vec) {
-        rhov = rho_vec->values;
-        for (i = 0; i < m; i++){
-            s->rho_inv_vec[i] = 1. / rhov[i];
-        }
-    }
-    else {
-      s->rho_inv = 1. / settings->rho;
-    }
 
     s->KKT = form_KKT(P->csc,A->csc,
                       1,  //format = 1 means CSR

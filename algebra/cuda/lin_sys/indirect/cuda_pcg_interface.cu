@@ -255,9 +255,14 @@ OSQPInt solve_linsys_cudapcg(cudapcg_solver* s,
     /* Copy the second part of b to z */
     cuda_vec_copy_d2d(s->d_z, b->d_val + s->n, s->m);
 
-    /* yred = (A * x - b2) / delta */
+    /* yred = rho .* (A * x - b2) */
     cuda_mat_Axpy(s->A, s->vecx, s->vecz, 1.0, -1.0);
-    cuda_vec_mult_sc(s->d_z, s->h_rho, s->m);
+    if (s->d_rho_vec) {
+      cuda_vec_ew_prod(s->d_z, s->d_z, s->d_rho_vec, s->m);
+    }
+    else {
+      cuda_vec_mult_sc(s->d_z, s->h_rho, s->m);
+    }
   }
 
   /* Copy the second part of the solution to b */
@@ -359,4 +364,3 @@ OSQPInt update_linsys_solver_rho_vec_cudapcg(cudapcg_solver*    s,
   cuda_pcg_update_precond(s, 0, 0, 1);
   return 0;
 }
-

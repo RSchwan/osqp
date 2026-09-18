@@ -311,6 +311,18 @@ OSQPInt init_linsys_solver_qdldl(qdldl_solver**      sp,
     s->bwork = (QDLDL_bool *)c_malloc(sizeof(QDLDL_bool)*n_plus_m);
     s->fwork = (QDLDL_float *)c_malloc(sizeof(QDLDL_float)*n_plus_m);
 
+    // Use p->rho_inv_vec for storing param2 = rho_inv_vec.
+    // NB: polish() supplies it too, to put a per-row value on the (2,2) block.
+    if (rho_vec) {
+      rhov = rho_vec->values;
+      for (i = 0; i < m; i++){
+          s->rho_inv_vec[i] = 1. / rhov[i];
+      }
+    }
+    else {
+      s->rho_inv = 1. / settings->rho;
+    }
+
     // Form and permute KKT matrix
     if (polishing){ // Called from polish()
 
@@ -329,17 +341,6 @@ OSQPInt init_linsys_solver_qdldl(qdldl_solver**      sp,
         s->PtoKKT = c_malloc(P->csc->p[n] * sizeof(OSQPInt));
         s->AtoKKT = c_malloc(A->csc->p[n] * sizeof(OSQPInt));
         s->rhotoKKT = c_malloc(m * sizeof(OSQPInt));
-
-        // Use p->rho_inv_vec for storing param2 = rho_inv_vec
-        if (rho_vec) {
-          rhov = rho_vec->values;
-          for (i = 0; i < m; i++){
-              s->rho_inv_vec[i] = 1. / rhov[i];
-          }
-        }
-        else {
-          s->rho_inv = 1. / settings->rho;
-        }
 
         KKT_temp = form_KKT(P->csc,A->csc,
                             0, //format = 0 means CSC format

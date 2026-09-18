@@ -98,6 +98,8 @@ struct Options {
   bool    uniform    = false;  ///< pass type == NULL instead of a type vector
   OSQPInt rho_is_vec = 1;
   bool    eq_row0    = false;  ///< make row 0 a hard equality
+  OSQPInt polishing  = 1;
+  enum osqp_linsys_solver_type linsys_solver = OSQP_UNKNOWN_SOLVER;
 };
 
 /* The shared problem: a strongly convex QP whose unconstrained minimizer is
@@ -150,8 +152,10 @@ void tighten(OSQPSettings*  s,
   s->eps_abs    = SOLVE_EPS;
   s->eps_rel    = SOLVE_EPS;
   s->max_iter   = MAX_ITER;
-  s->polishing  = 0;  /* Polishing is only guarded against soft rows in chunk 6 */
+  s->polishing  = opts.polishing;
   s->rho_is_vec = opts.rho_is_vec;
+  if (opts.linsys_solver != OSQP_UNKNOWN_SOLVER)
+    s->linsys_solver = opts.linsys_solver;
   s->check_dualgap = 1;  /* Exercise the new gap as a termination criterion */
 }
 
@@ -208,6 +212,13 @@ std::vector<OSQPFloat> solve_soft(const Problem&              prob,
   if (pen_out) *pen_out = solver->info->penalty_val;
   if (gap_out)  *gap_out  = solver->info->duality_gap;
   if (dual_out) *dual_out = solver->info->dual_obj_val;
+
+  /* Polishing has to handle soft rows, not decline them: the reduced KKT
+     carries a 1/kappa diagonal where a slack moves with its dual, and pins the
+     dual where it does not. */
+  if (opts.polishing)
+    mu_assert("Soft QP: polishing did not succeed",
+              solver->info->status_polish == OSQP_POLISH_SUCCESS);
 
   return x;
 }
@@ -299,7 +310,7 @@ std::vector<OSQPFloat> solve_lifted(const Problem&              prob,
   OwnedCsc_ptr A = to_csc(M, N, Ad);
 
   OSQPSettings_ptr settings{OSQPSettings_new()};
-  tighten(settings.get());
+  tighten(settings.get(), Options{});
 
   OSQPSolver* tmp = nullptr;
   OSQPInt exitflag = osqp_setup(&tmp, P.get(), qd.data(), A.get(), ld.data(), ud.data(),
@@ -409,7 +420,13 @@ TEST_CASE("Soft QP: quadratic penalty", "[penalty],[solve]")
                 {-0.187234042549, -0.276595744677, -1.063829787231},
                 -2.016489361696};
 
-  SECTION("Per-row type vector") { check_against_lift(pen, ref); }
+  SECTION("Every supported linear solver")
+  {
+    Options opts;
+    opts.linsys_solver = GENERATE(filter(&isLinsysSupported,
+                                  values({OSQP_DIRECT_SOLVER, OSQP_INDIRECT_SOLVER})));
+    check_against_lift(pen, ref, opts);
+  }
 
   // A homogeneous penalty has a second entry point: a NULL type vector takes
   // the specialized dispatch path, which must reach the same solution

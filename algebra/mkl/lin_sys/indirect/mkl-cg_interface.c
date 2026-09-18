@@ -107,14 +107,11 @@ OSQPInt init_linsys_mklcg(mklcg_solver**     sp,
   s->scaled_prim_res = scaled_prim_res;
   s->scaled_dual_res = scaled_dual_res;
 
-  //if polish is false, use the rho_vec we get.
-  //Otherwise, use rho_vec = ones.*(1/sigma)
+  // rho_vec is the ADMM penalty outside polishing and the reciprocal of the
+  // reduced KKT (2,2) diagonal during polishing.
   s->rho_vec = OSQPVectorf_malloc(m);
-  if (!polish) {
-      OSQPVectorf_copy(s->rho_vec, rho_vec);
-  } else {
-      OSQPVectorf_set_scalar(s->rho_vec, 1/settings->sigma);
-  }
+  if (rho_vec) OSQPVectorf_copy(s->rho_vec, rho_vec);
+  else         OSQPVectorf_set_scalar(s->rho_vec, settings->rho);
 
   //Link functions
   s->name            = &name_mklcg;

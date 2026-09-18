@@ -50,7 +50,11 @@ typedef struct {
 typedef struct {
   OSQPMatrix*  Ared;          ///< active rows of A; Ared = vstack[Alow, Aupp]
   OSQPInt      n_active;      ///< number of active constraints
-  OSQPVectori* active_flags;  ///< -1/0/1 to indicate  lower/ inactive / upper active constraints
+  OSQPVectori* active_flags;  ///< -1/0/1 to indicate lower / inactive / upper active constraints, -2/2 for a soft row on a smooth piece of its penalty
+  OSQPVectorf* kkt_diag;      ///< reciprocal of the (2,2) KKT diagonal, packed over the selected rows
+  OSQPVectorf* kkt_exact;     ///< the part of that diagonal that is not regularization, packed likewise
+  OSQPVectorf* rhs_bound;     ///< value the reduced rhs takes on each selected row, size m
+  OSQPVectorf* y_fixed;       ///< dual of the rows left out of Ared, nonzero only on a linear piece of a penalty, size m
   OSQPVectorf* x;             ///< optimal x-solution obtained by polish
   OSQPVectorf* z;             ///< optimal z-solution obtained by polish
   OSQPVectorf* y;             ///< optimal y-solution obtained by polish

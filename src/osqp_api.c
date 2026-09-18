@@ -517,11 +517,16 @@ OSQPInt osqp_setup(OSQPSolver**         solverp,
   work->pol = c_malloc(sizeof(OSQPPolish));
   if (!(work->pol)) return osqp_error(OSQP_MEM_ALLOC_ERROR);
   work->pol->active_flags = OSQPVectori_malloc(m);
+  work->pol->kkt_diag     = OSQPVectorf_malloc(m);
+  work->pol->kkt_exact    = OSQPVectorf_malloc(m);
+  work->pol->rhs_bound    = OSQPVectorf_malloc(m);
+  work->pol->y_fixed      = OSQPVectorf_malloc(m);
   work->pol->x            = OSQPVectorf_malloc(n);
   work->pol->z            = OSQPVectorf_malloc(m);
   work->pol->y            = OSQPVectorf_malloc(m);
   if (!(work->pol->x)) return osqp_error(OSQP_MEM_ALLOC_ERROR);
-  if (!(work->pol->active_flags) ||
+  if (!(work->pol->active_flags) || !(work->pol->kkt_diag) || !(work->pol->kkt_exact) ||
+      !(work->pol->rhs_bound) || !(work->pol->y_fixed) ||
       !(work->pol->z) || !(work->pol->y))
     return osqp_error(OSQP_MEM_ALLOC_ERROR);
 
@@ -1107,6 +1112,10 @@ OSQPInt osqp_cleanup(OSQPSolver* solver) {
     // Free active constraints structure
     if (work->pol) {
       OSQPVectori_free(work->pol->active_flags);
+      OSQPVectorf_free(work->pol->kkt_diag);
+      OSQPVectorf_free(work->pol->kkt_exact);
+      OSQPVectorf_free(work->pol->rhs_bound);
+      OSQPVectorf_free(work->pol->y_fixed);
       OSQPVectorf_free(work->pol->x);
       OSQPVectorf_free(work->pol->z);
       OSQPVectorf_free(work->pol->y);
