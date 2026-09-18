@@ -8,7 +8,204 @@
  *                                                                             *
  * Branchy element-wise work with no BLAS equivalent, so the builtin and MKL    *
  * backends share one implementation rather than each carrying a copy.          *
+ * Uniform soft penalties deliberately use the same loop as mixed penalties;   *
+ * only uniform hard penalties bypass it. CUDA specializes uniform kernels.    *
  *******************************************************************************/
+
+/* prox_{phi/rho}(r) for a single row */
+static OSQPFloat ew_prox_penalty_row(OSQPFloat r,
+                                     OSQPFloat rho,
+                                     OSQPInt   type,
+                                     OSQPFloat a1,
+                                     OSQPFloat a2,
+                                     OSQPFloat d) {
+
+  OSQPFloat t;
+
+  switch (type) {
+    case OSQP_PENALTY_L1L2:
+      /* rho/(rho + alpha2) * S_{alpha1/rho}(r) */
+      t = c_absval(r) - a1 / rho;
+      if (t <= 0.0) return 0.0;
+      return (r > 0.0 ? t : -t) * rho / (rho + a2);
+
+    case OSQP_PENALTY_HUBER:
+      if (a1 == (OSQPFloat)HUGE_VAL) return 0.0;
+      /* Test the quadratic candidate instead of forming (1 + a1/rho)*d,
+         whose intermediate ratio can overflow for finite scaled weights.
+         Divide r first for large weights, so rho/(rho+a1) cannot underflow;
+         otherwise form the bounded ratio first to avoid enlarging r. */
+      t = a1 > 1.0 ? (r / (rho + a1)) * rho
+                   : (rho / (rho + a1)) * r;
+      if (c_absval(t) <= d) return t;
+      /* Divide first only when rho reduces the product. */
+      t = rho >= 1.0 ? (a1 / rho) * d : (a1 * d) / rho;
+      return r - t * (r > 0.0 ? 1.0 : -1.0);
+
+    default:
+      return 0.0;   // Hard row
+  }
+}
+
+/* phi(s) for a single row */
+static OSQPFloat penalty_value_row(OSQPFloat s,
+                                   OSQPInt   type,
+                                   OSQPFloat a1,
+                                   OSQPFloat a2,
+                                   OSQPFloat d) {
+
+  OSQPFloat as = c_absval(s);
+
+  /* NB: s is exactly zero on a hard row and on any row whose weight is
+     infinite, so returning here also avoids forming 0 * inf */
+  if (as == 0.0) return 0.0;
+
+  switch (type) {
+    case OSQP_PENALTY_L1L2:
+      return a1 * as + 0.5 * a2 * s * s;
+
+    case OSQP_PENALTY_HUBER:
+      return as <= d ? 0.5 * a1 * s * s : a1 * (d * as - 0.5 * d * d);
+
+    default:
+      return 0.0;
+  }
+}
+
+/* phi*(y) for a single row, OSQP_INFTY outside the domain */
+static OSQPFloat penalty_conj_row(OSQPFloat y,
+                                  OSQPInt   type,
+                                  OSQPFloat a1,
+                                  OSQPFloat a2,
+                                  OSQPFloat d) {
+
+  OSQPFloat ay = c_absval(y);
+  OSQPFloat t;
+
+  switch (type) {
+    case OSQP_PENALTY_L1L2:
+      /* Pure L1 has an indicator conjugate; an infinite quadratic weight
+         has a zero conjugate. Handle both before any division or square. */
+      if (a2 <= 0.0) return ay <= a1 ? 0.0 : OSQP_INFTY;
+      if (a2 == (OSQPFloat)HUGE_VAL) return 0.0;
+      t = ay - a1;
+      return t <= 0.0 ? 0.0 : (0.5 * t) * (t / a2);
+
+    case OSQP_PENALTY_HUBER:
+      if (a1 == (OSQPFloat)HUGE_VAL) return 0.0;
+      return ay <= a1 * d ? (0.5 * ay) * (ay / a1) : OSQP_INFTY;
+
+    default:
+      return 0.0;   // Hard row, phi* = 0
+  }
+}
+
+void OSQPVectorf_ew_prox_penalty(OSQPVectorf*       z,
+                                 const OSQPVectorf* v,
+                                 const OSQPVectorf* l,
+                                 const OSQPVectorf* u,
+                                 const OSQPVectorf* rho_vec,
+                                 OSQPFloat          rho,
+                                 const OSQPVectorf* alpha1,
+                                 const OSQPVectorf* alpha2,
+                                 const OSQPVectorf* delta,
+                                 const OSQPVectori* type,
+                                 OSQPInt            default_type) {
+
+  OSQPInt    i;
+  OSQPInt    length = z->length;
+  OSQPFloat* zv     = z->values;
+  OSQPFloat* vv     = v->values;
+  OSQPFloat* lv     = l->values;
+  OSQPFloat* uv     = u->values;
+  OSQPFloat* a1     = alpha1->values;
+  OSQPFloat* a2     = alpha2->values;
+  OSQPFloat* d      = delta->values;
+  OSQPFloat* rv     = rho_vec ? rho_vec->values : OSQP_NULL;
+  OSQPInt*   tv     = type ? type->values : OSQP_NULL;
+
+  /* The all-hard case is the plain projection, bit for bit */
+  if (!tv && (default_type == OSQP_PENALTY_NONE)) {
+    OSQPVectorf_ew_bound_vec(z, v, l, u);
+    return;
+  }
+
+  for (i = 0; i < length; i++) {
+    OSQPFloat vbar = c_min(c_max(vv[i], lv[i]), uv[i]);
+
+    zv[i] = vbar + ew_prox_penalty_row(vv[i] - vbar, rv ? rv[i] : rho,
+                                       tv ? tv[i] : default_type,
+                                       a1[i], a2[i], d[i]);
+  }
+}
+
+OSQPFloat OSQPVectorf_penalty_value(const OSQPVectorf* z,
+                                    const OSQPVectorf* l,
+                                    const OSQPVectorf* u,
+                                    const OSQPVectorf* alpha1,
+                                    const OSQPVectorf* alpha2,
+                                    const OSQPVectorf* delta,
+                                    const OSQPVectori* type,
+                                    OSQPInt            default_type,
+                                    OSQPVectorf*       scratch) {
+
+  OSQPInt    i;
+  OSQPFloat  val    = 0.0;
+  OSQPInt    length = z->length;
+  OSQPFloat* zv     = z->values;
+  OSQPFloat* lv     = l->values;
+  OSQPFloat* uv     = u->values;
+  OSQPFloat* a1     = alpha1->values;
+  OSQPFloat* a2     = alpha2->values;
+  OSQPFloat* d      = delta->values;
+  OSQPInt*   tv     = type ? type->values : OSQP_NULL;
+
+  (void)scratch; /* Only device backends need reduction storage. */
+
+  if (!tv && (default_type == OSQP_PENALTY_NONE)) return 0.0;
+
+  for (i = 0; i < length; i++) {
+    OSQPFloat zbar = c_min(c_max(zv[i], lv[i]), uv[i]);
+
+    val += penalty_value_row(zv[i] - zbar, tv ? tv[i] : default_type,
+                             a1[i], a2[i], d[i]);
+  }
+
+  return val;
+}
+
+OSQPFloat OSQPVectorf_penalty_conj_value(const OSQPVectorf* y,
+                                         const OSQPVectorf* alpha1,
+                                         const OSQPVectorf* alpha2,
+                                         const OSQPVectorf* delta,
+                                         const OSQPVectori* type,
+                                         OSQPInt            default_type,
+                                         OSQPVectorf*       scratch) {
+
+  OSQPInt    i;
+  OSQPFloat  val    = 0.0;
+  OSQPInt    length = y->length;
+  OSQPFloat* yv     = y->values;
+  OSQPFloat* a1     = alpha1->values;
+  OSQPFloat* a2     = alpha2->values;
+  OSQPFloat* d      = delta->values;
+  OSQPInt*   tv     = type ? type->values : OSQP_NULL;
+
+  (void)scratch; /* Only device backends need reduction storage. */
+
+  if (!tv && (default_type == OSQP_PENALTY_NONE)) return 0.0;
+
+  for (i = 0; i < length; i++) {
+    OSQPFloat c = penalty_conj_row(yv[i], tv ? tv[i] : default_type,
+                                   a1[i], a2[i], d[i]);
+
+    if (c >= OSQP_INFTY) return OSQP_INFTY;
+
+    val += c;
+  }
+
+  return val;
+}
 
 #if OSQP_EMBEDDED_MODE != 1
 

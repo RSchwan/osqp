@@ -57,6 +57,8 @@ void penalty_free(OSQPWorkspace* work) {
   work->penalty_type_tmp = OSQP_NULL;
   OSQPVectori_free(work->penalty_flags_tmp);
   work->penalty_flags_tmp = OSQP_NULL;
+  OSQPVectorf_free(work->penalty_val_tmp);
+  work->penalty_val_tmp = OSQP_NULL;
 
   work->penalty_any_soft          = 0;
   work->penalty_any_linear_growth = 0;
@@ -96,9 +98,11 @@ static OSQPInt penalty_alloc(OSQPWorkspace* work,
   work->data->penalty    = pen;
   work->penalty_type_tmp = OSQPVectori_calloc(m);
   work->penalty_flags_tmp = OSQPVectori_calloc(1);
+  work->penalty_val_tmp   = OSQPVectorf_malloc(1);
 
   if (!(pen->type) || !(pen->alpha1) || !(pen->alpha2) || !(pen->delta) ||
-      !(work->penalty_type_tmp) || !(work->penalty_flags_tmp)) {
+      !(work->penalty_type_tmp) || !(work->penalty_flags_tmp) ||
+      !(work->penalty_val_tmp)) {
     penalty_free(work);
     return 1;
   }

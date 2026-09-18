@@ -139,7 +139,8 @@ struct OSQPWorkspace_ {
    * @{
    */
   OSQPVectori* penalty_type_tmp;     ///< staging for incoming per-row types, size m
-  OSQPVectori* penalty_flags_tmp;    ///< one-element scratch for backend reductions
+  OSQPVectori* penalty_flags_tmp;    ///< one-element integer scratch for backend reductions
+  OSQPVectorf* penalty_val_tmp;      ///< one-element float scratch for backend reductions
   OSQPInt penalty_any_soft;          ///< boolean; any row not OSQP_PENALTY_NONE
   OSQPInt penalty_any_linear_growth; ///< boolean; any soft row growing only linearly
 

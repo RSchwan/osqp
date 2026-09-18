@@ -240,6 +240,63 @@ OSQPInt OSQPVectorf_in_reccone(const OSQPVectorf* y,
                                OSQPFloat          infval,
                                OSQPFloat          tol);
 
+
+/* Soft-constraint penalty operations.  In all three routines the type vector
+   may be OSQP_NULL, in which case every row takes default_type.  The penalty
+   on row i is
+
+     OSQP_PENALTY_NONE : hard row, phi = indicator of {0}
+     OSQP_PENALTY_L1L2 : phi(s) = alpha1*|s| + (alpha2/2)*s^2
+     OSQP_PENALTY_HUBER: phi(s) = alpha1*h_delta(s), where h_delta(s) is
+                         s^2/2 for |s| <= delta and delta*|s| - delta^2/2 above
+
+   The parameters are the internally scaled ones and may be IEEE infinity,
+   which makes the row behave as hard.
+ */
+
+/* Elementwise generalized projection z = vbar + prox_{phi/rho}(v - vbar),
+   where vbar = min(max(v,l),u).  Reduces to OSQPVectorf_ew_bound_vec when
+   every row is hard.  rho_vec may be OSQP_NULL, in which case the scalar rho
+   applies to every row.  It is acceptable to assign z == v.
+ */
+void OSQPVectorf_ew_prox_penalty(OSQPVectorf*       z,
+                                 const OSQPVectorf* v,
+                                 const OSQPVectorf* l,
+                                 const OSQPVectorf* u,
+                                 const OSQPVectorf* rho_vec,
+                                 OSQPFloat          rho,
+                                 const OSQPVectorf* alpha1,
+                                 const OSQPVectorf* alpha2,
+                                 const OSQPVectorf* delta,
+                                 const OSQPVectori* type,
+                                 OSQPInt            default_type);
+
+/* Penalty contribution to the objective, sum_i phi_i(R(z)_i), where the
+   residual is R(z) = z - min(max(z,l),u).
+   scratch is a preallocated one-element float vector for backend reductions.
+ */
+OSQPFloat OSQPVectorf_penalty_value(const OSQPVectorf* z,
+                                    const OSQPVectorf* l,
+                                    const OSQPVectorf* u,
+                                    const OSQPVectorf* alpha1,
+                                    const OSQPVectorf* alpha2,
+                                    const OSQPVectorf* delta,
+                                    const OSQPVectori* type,
+                                    OSQPInt            default_type,
+                                    OSQPVectorf*       scratch);
+
+/* Conjugate sum_i phi*_i(y_i), needed by the duality gap.  Returns OSQP_INFTY
+   if any row lies outside dom phi*.
+   scratch is a preallocated one-element float vector for backend reductions.
+ */
+OSQPFloat OSQPVectorf_penalty_conj_value(const OSQPVectorf* y,
+                                         const OSQPVectorf* alpha1,
+                                         const OSQPVectorf* alpha2,
+                                         const OSQPVectorf* delta,
+                                         const OSQPVectori* type,
+                                         OSQPInt            default_type,
+                                         OSQPVectorf*       scratch);
+
 # if OSQP_EMBEDDED_MODE != 1
 
 /* Vector elementwise reciprocal b = 1./a (needed for scaling)*/

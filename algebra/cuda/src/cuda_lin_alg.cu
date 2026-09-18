@@ -203,6 +203,167 @@ __global__ void vec_penalty_flags_kernel(const OSQPFloat* a2,
   }
 }
 
+/* prox_{phi/rho}(r) for a single row */
+__device__ static OSQPFloat prox_penalty_row(OSQPFloat r,
+                                             OSQPFloat rho,
+                                             OSQPInt   type,
+                                             OSQPFloat a1,
+                                             OSQPFloat a2,
+                                             OSQPFloat d) {
+
+  OSQPFloat t;
+
+  switch (type) {
+    case OSQP_PENALTY_L1L2:
+      /* rho/(rho + alpha2) * S_{alpha1/rho}(r) */
+      t = c_absval(r) - a1 / rho;
+      if (t <= 0.0) return 0.0;
+      return (r > 0.0 ? t : -t) * rho / (rho + a2);
+
+    case OSQP_PENALTY_HUBER:
+      if (a1 == (OSQPFloat)HUGE_VAL) return 0.0;
+      /* Test the quadratic candidate instead of forming (1 + a1/rho)*d,
+         whose intermediate ratio can overflow for finite scaled weights.
+         Divide r first for large weights, so rho/(rho+a1) cannot underflow;
+         otherwise form the bounded ratio first to avoid enlarging r. */
+      t = a1 > 1.0 ? (r / (rho + a1)) * rho
+                   : (rho / (rho + a1)) * r;
+      if (c_absval(t) <= d) return t;
+      /* Divide first only when rho reduces the product. */
+      t = rho >= 1.0 ? (a1 / rho) * d : (a1 * d) / rho;
+      return r - t * (r > 0.0 ? 1.0 : -1.0);
+
+    default:
+      return 0.0;   // Hard row
+  }
+}
+
+/* phi(s) for a single row */
+__device__ static OSQPFloat penalty_value_row(OSQPFloat s,
+                                              OSQPInt   type,
+                                              OSQPFloat a1,
+                                              OSQPFloat a2,
+                                              OSQPFloat d) {
+
+  OSQPFloat as = c_absval(s);
+
+  /* NB: s is exactly zero on a hard row and on any row whose weight is
+     infinite, so returning here also avoids forming 0 * inf */
+  if (as == 0.0) return 0.0;
+
+  switch (type) {
+    case OSQP_PENALTY_L1L2:
+      return a1 * as + 0.5 * a2 * s * s;
+
+    case OSQP_PENALTY_HUBER:
+      return as <= d ? 0.5 * a1 * s * s : a1 * (d * as - 0.5 * d * d);
+
+    default:
+      return 0.0;
+  }
+}
+
+/* phi*(y) for a single row, OSQP_INFTY outside the domain */
+__device__ static OSQPFloat penalty_conj_row(OSQPFloat y,
+                                             OSQPInt   type,
+                                             OSQPFloat a1,
+                                             OSQPFloat a2,
+                                             OSQPFloat d) {
+
+  OSQPFloat ay = c_absval(y);
+  OSQPFloat t;
+
+  switch (type) {
+    case OSQP_PENALTY_L1L2:
+      /* Pure L1 has an indicator conjugate; an infinite quadratic weight
+         has a zero conjugate. Handle both before any division or square. */
+      if (a2 <= 0.0) return ay <= a1 ? 0.0 : OSQP_INFTY;
+      if (a2 == (OSQPFloat)HUGE_VAL) return 0.0;
+      t = ay - a1;
+      return t <= 0.0 ? 0.0 : (0.5 * t) * (t / a2);
+
+    case OSQP_PENALTY_HUBER:
+      if (a1 == (OSQPFloat)HUGE_VAL) return 0.0;
+      return ay <= a1 * d ? (0.5 * ay) * (ay / a1) : OSQP_INFTY;
+
+    default:
+      return 0.0;   // Hard row, phi* = 0
+  }
+}
+
+/* TYPE < 0 reads the per-row type vector, otherwise every row is TYPE and the
+   switches above fold away at compile time */
+template<OSQPInt TYPE>
+__global__ void vec_prox_penalty_kernel(      OSQPFloat* z,
+                                        const OSQPFloat* v,
+                                        const OSQPFloat* l,
+                                        const OSQPFloat* u,
+                                        const OSQPFloat* rho_vec,
+                                              OSQPFloat  rho,
+                                        const OSQPFloat* a1,
+                                        const OSQPFloat* a2,
+                                        const OSQPFloat* d,
+                                        const OSQPInt*   type,
+                                              OSQPInt    n) {
+
+  OSQPInt idx = threadIdx.x + blockDim.x * blockIdx.x;
+  OSQPInt grid_size = blockDim.x * gridDim.x;
+
+  for(OSQPInt i = idx; i < n; i += grid_size) {
+    OSQPFloat vbar = c_min(c_max(v[i], l[i]), u[i]);
+
+    z[i] = vbar + prox_penalty_row(v[i] - vbar, rho_vec ? rho_vec[i] : rho,
+                                   TYPE < 0 ? type[i] : TYPE,
+                                   a1[i], a2[i], d[i]);
+  }
+}
+
+template<OSQPInt TYPE>
+__global__ void vec_penalty_value_kernel(const OSQPFloat* z,
+                                         const OSQPFloat* l,
+                                         const OSQPFloat* u,
+                                         const OSQPFloat* a1,
+                                         const OSQPFloat* a2,
+                                         const OSQPFloat* d,
+                                         const OSQPInt*   type,
+                                               OSQPFloat* res,
+                                               OSQPInt    n) {
+
+  OSQPInt idx = threadIdx.x + blockDim.x * blockIdx.x;
+  OSQPInt grid_size = blockDim.x * gridDim.x;
+
+  OSQPFloat res_kernel = 0.0;
+
+  for(OSQPInt i = idx; i < n; i += grid_size) {
+    OSQPFloat zbar = c_min(c_max(z[i], l[i]), u[i]);
+
+    res_kernel += penalty_value_row(z[i] - zbar, TYPE < 0 ? type[i] : TYPE,
+                                    a1[i], a2[i], d[i]);
+  }
+  atomicAdd(res, res_kernel);
+}
+
+template<OSQPInt TYPE>
+__global__ void vec_penalty_conj_value_kernel(const OSQPFloat* y,
+                                              const OSQPFloat* a1,
+                                              const OSQPFloat* a2,
+                                              const OSQPFloat* d,
+                                              const OSQPInt*   type,
+                                                    OSQPFloat* res,
+                                                    OSQPInt    n) {
+
+  OSQPInt idx = threadIdx.x + blockDim.x * blockIdx.x;
+  OSQPInt grid_size = blockDim.x * gridDim.x;
+
+  OSQPFloat res_kernel = 0.0;
+
+  for(OSQPInt i = idx; i < n; i += grid_size) {
+    res_kernel += penalty_conj_row(y[i], TYPE < 0 ? type[i] : TYPE,
+                                   a1[i], a2[i], d[i]);
+  }
+  atomicAdd(res, res_kernel);
+}
+
 __global__ void vec_prod_pos_kernel(const OSQPFloat* a,
                                     const OSQPFloat* b,
                                           OSQPFloat* res,
@@ -786,6 +947,106 @@ void cuda_vec_penalty_flags(const OSQPFloat* d_a2,
   vec_penalty_flags_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_a2, d_type, default_type, d_res, n);
 
   checkCudaErrors(cudaMemcpy(h_res, d_res, sizeof(OSQPInt), cudaMemcpyDeviceToHost));
+}
+
+/* Launch KERNEL specialized on the uniform type when d_type is NULL, so that a
+   uniform problem runs a branch-free kernel, otherwise the per-row variant */
+#define CUDA_PENALTY_DISPATCH(KERNEL, ...)                                     \
+  do {                                                                         \
+    if (d_type) {                                                              \
+      KERNEL<-1><<<number_of_blocks, THREADS_PER_BLOCK>>>(__VA_ARGS__);        \
+    }                                                                          \
+    else {                                                                     \
+      switch (default_type) {                                                  \
+        case OSQP_PENALTY_L1L2:                                                \
+          KERNEL<OSQP_PENALTY_L1L2><<<number_of_blocks, THREADS_PER_BLOCK>>>(__VA_ARGS__);  \
+          break;                                                               \
+        case OSQP_PENALTY_HUBER:                                               \
+          KERNEL<OSQP_PENALTY_HUBER><<<number_of_blocks, THREADS_PER_BLOCK>>>(__VA_ARGS__); \
+          break;                                                               \
+        default:                                                               \
+          KERNEL<OSQP_PENALTY_NONE><<<number_of_blocks, THREADS_PER_BLOCK>>>(__VA_ARGS__);  \
+          break;                                                               \
+      }                                                                        \
+    }                                                                          \
+  } while (0)
+
+void cuda_vec_prox_penalty(      OSQPFloat* d_z,
+                           const OSQPFloat* d_v,
+                           const OSQPFloat* d_l,
+                           const OSQPFloat* d_u,
+                           const OSQPFloat* d_rho_vec,
+                                 OSQPFloat  rho,
+                           const OSQPFloat* d_a1,
+                           const OSQPFloat* d_a2,
+                           const OSQPFloat* d_d,
+                           const OSQPInt*   d_type,
+                                 OSQPInt    default_type,
+                                 OSQPInt    n) {
+
+  OSQPInt number_of_blocks = (n / THREADS_PER_BLOCK) + 1;
+
+  /* The all-hard case is the plain projection, bit for bit */
+  if (!d_type && (default_type == OSQP_PENALTY_NONE)) {
+    cuda_vec_bound(d_z, d_v, d_l, d_u, n);
+    return;
+  }
+
+  CUDA_PENALTY_DISPATCH(vec_prox_penalty_kernel, d_z, d_v, d_l, d_u,
+                        d_rho_vec, rho, d_a1, d_a2, d_d, d_type, n);
+}
+
+void cuda_vec_penalty_value(const OSQPFloat* d_z,
+                            const OSQPFloat* d_l,
+                            const OSQPFloat* d_u,
+                            const OSQPFloat* d_a1,
+                            const OSQPFloat* d_a2,
+                            const OSQPFloat* d_d,
+                            const OSQPInt*   d_type,
+                                  OSQPInt    default_type,
+                                  OSQPInt    n,
+                                  OSQPFloat* h_res,
+                                  OSQPFloat* d_res) {
+
+  OSQPInt number_of_blocks = (n / THREADS_PER_BLOCK) + 1;
+
+  *h_res = 0.0;
+
+  if (!d_type && (default_type == OSQP_PENALTY_NONE)) return;
+
+  checkCudaErrors(cudaMemcpy(d_res, h_res, sizeof(OSQPFloat), cudaMemcpyHostToDevice));
+
+  CUDA_PENALTY_DISPATCH(vec_penalty_value_kernel, d_z, d_l, d_u,
+                        d_a1, d_a2, d_d, d_type, d_res, n);
+
+  checkCudaErrors(cudaMemcpy(h_res, d_res, sizeof(OSQPFloat), cudaMemcpyDeviceToHost));
+}
+
+void cuda_vec_penalty_conj_value(const OSQPFloat* d_y,
+                                 const OSQPFloat* d_a1,
+                                 const OSQPFloat* d_a2,
+                                 const OSQPFloat* d_d,
+                                 const OSQPInt*   d_type,
+                                       OSQPInt    default_type,
+                                       OSQPInt    n,
+                                       OSQPFloat* h_res,
+                                       OSQPFloat* d_res) {
+
+  OSQPInt number_of_blocks = (n / THREADS_PER_BLOCK) + 1;
+
+  *h_res = 0.0;
+
+  if (!d_type && (default_type == OSQP_PENALTY_NONE)) return;
+
+  checkCudaErrors(cudaMemcpy(d_res, h_res, sizeof(OSQPFloat), cudaMemcpyHostToDevice));
+
+  CUDA_PENALTY_DISPATCH(vec_penalty_conj_value_kernel, d_y,
+                        d_a1, d_a2, d_d, d_type, d_res, n);
+
+  checkCudaErrors(cudaMemcpy(h_res, d_res, sizeof(OSQPFloat), cudaMemcpyDeviceToHost));
+
+  /* Rows outside dom phi* each contribute OSQP_INFTY to the sum */
+  if (*h_res >= OSQP_INFTY) *h_res = OSQP_INFTY;
 }
 
 void cuda_vec_round(OSQPFloat* d_a,

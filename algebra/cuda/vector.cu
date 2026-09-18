@@ -451,6 +451,62 @@ void OSQPVectorf_ew_bound_vec(OSQPVectorf*       x,
   cuda_vec_bound(x->d_val, z->d_val, l->d_val, u->d_val, x->length);
 }
 
+void OSQPVectorf_ew_prox_penalty(OSQPVectorf*       z,
+                                 const OSQPVectorf* v,
+                                 const OSQPVectorf* l,
+                                 const OSQPVectorf* u,
+                                 const OSQPVectorf* rho_vec,
+                                 OSQPFloat          rho,
+                                 const OSQPVectorf* alpha1,
+                                 const OSQPVectorf* alpha2,
+                                 const OSQPVectorf* delta,
+                                 const OSQPVectori* type,
+                                 OSQPInt            default_type) {
+
+  cuda_vec_prox_penalty(z->d_val, v->d_val, l->d_val, u->d_val,
+                        rho_vec ? rho_vec->d_val : (const OSQPFloat*)OSQP_NULL,
+                        rho, alpha1->d_val, alpha2->d_val, delta->d_val,
+                        type ? type->d_val : (const OSQPInt*)OSQP_NULL,
+                        default_type, z->length);
+}
+
+OSQPFloat OSQPVectorf_penalty_value(const OSQPVectorf* z,
+                                    const OSQPVectorf* l,
+                                    const OSQPVectorf* u,
+                                    const OSQPVectorf* alpha1,
+                                    const OSQPVectorf* alpha2,
+                                    const OSQPVectorf* delta,
+                                    const OSQPVectori* type,
+                                    OSQPInt            default_type,
+                                    OSQPVectorf*       scratch) {
+
+  OSQPFloat res;
+
+  cuda_vec_penalty_value(z->d_val, l->d_val, u->d_val,
+                         alpha1->d_val, alpha2->d_val, delta->d_val,
+                         type ? type->d_val : (const OSQPInt*)OSQP_NULL,
+                         default_type, z->length, &res, scratch->d_val);
+
+  return res;
+}
+
+OSQPFloat OSQPVectorf_penalty_conj_value(const OSQPVectorf* y,
+                                         const OSQPVectorf* alpha1,
+                                         const OSQPVectorf* alpha2,
+                                         const OSQPVectorf* delta,
+                                         const OSQPVectori* type,
+                                         OSQPInt            default_type,
+                                         OSQPVectorf*       scratch) {
+
+  OSQPFloat res;
+
+  cuda_vec_penalty_conj_value(y->d_val, alpha1->d_val, alpha2->d_val, delta->d_val,
+                              type ? type->d_val : (const OSQPInt*)OSQP_NULL,
+                              default_type, y->length, &res, scratch->d_val);
+
+  return res;
+}
+
 void OSQPVectorf_project_polar_reccone(OSQPVectorf*       y,
                                        const OSQPVectorf* l,
                                        const OSQPVectorf* u,

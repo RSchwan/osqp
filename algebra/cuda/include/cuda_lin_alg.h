@@ -175,6 +175,55 @@ void cuda_vec_penalty_flags(const OSQPFloat* d_a2,
                             OSQPInt*         d_res);
 
 /**
+ * Elementwise generalized projection d_z = vbar + prox_{phi/rho}(d_v - vbar),
+ * where vbar = min(max(d_v, d_l), d_u).  d_rho_vec may be NULL, in which case
+ * the scalar rho applies to every row.  d_type may be NULL to use
+ * default_type, which selects a kernel specialized on that type.
+ */
+void cuda_vec_prox_penalty(      OSQPFloat* d_z,
+                           const OSQPFloat* d_v,
+                           const OSQPFloat* d_l,
+                           const OSQPFloat* d_u,
+                           const OSQPFloat* d_rho_vec,
+                                 OSQPFloat  rho,
+                           const OSQPFloat* d_a1,
+                           const OSQPFloat* d_a2,
+                           const OSQPFloat* d_d,
+                           const OSQPInt*   d_type,
+                                 OSQPInt    default_type,
+                                 OSQPInt    n);
+
+/**
+ * Penalty contribution to the objective, sum_i phi_i(R(z)_i), where
+ * R(z) = z - min(max(z, d_l), d_u).
+ */
+void cuda_vec_penalty_value(const OSQPFloat* d_z,
+                            const OSQPFloat* d_l,
+                            const OSQPFloat* d_u,
+                            const OSQPFloat* d_a1,
+                            const OSQPFloat* d_a2,
+                            const OSQPFloat* d_d,
+                            const OSQPInt*   d_type,
+                                  OSQPInt    default_type,
+                                  OSQPInt    n,
+                                  OSQPFloat* h_res,
+                                  OSQPFloat* d_res);
+
+/**
+ * Conjugate sum_i phi*_i(y_i).  Returns OSQP_INFTY if any row lies outside
+ * dom phi*.
+ */
+void cuda_vec_penalty_conj_value(const OSQPFloat* d_y,
+                                 const OSQPFloat* d_a1,
+                                 const OSQPFloat* d_a2,
+                                 const OSQPFloat* d_d,
+                                 const OSQPInt*   d_type,
+                                       OSQPInt    default_type,
+                                       OSQPInt    n,
+                                       OSQPFloat* h_res,
+                                       OSQPFloat* d_res);
+
+/**
  * Round numbers within tol of 0 to 0.
  *
  * if |d_a[i]| < tol, then d_a[i] = 0.0
