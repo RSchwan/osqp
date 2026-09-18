@@ -41,6 +41,7 @@ target_sources(
           ../_common/csc_math.c
           ../_common/csc_utils.h
           ../_common/csc_utils.c
+          ../_common/vector_penalty.c
           ../_common/kkt.h
           ../_common/kkt.c
           ../_common/reduced_kkt.h

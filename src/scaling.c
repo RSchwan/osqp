@@ -1,4 +1,5 @@
 #include "scaling.h"
+#include "penalty.h"
 
 #if OSQP_EMBEDDED_MODE != 1
 
@@ -160,6 +161,8 @@ OSQPInt scale_data(OSQPSolver* solver) {
   OSQPVectorf_ew_prod(work->data->l, work->data->l, work->scaling->E);
   OSQPVectorf_ew_prod(work->data->u, work->data->u, work->scaling->E);
 
+  // Scale the soft-constraint penalties
+  penalty_scale(solver);
   return 0;
 }
 
@@ -188,6 +191,10 @@ OSQPInt unscale_data(OSQPSolver* solver) {
                       work->data->u,
                       work->scaling->Einv);
 
+  // Unscale the soft-constraint penalties
+#if OSQP_EMBEDDED_MODE != 1
+  penalty_unscale(solver);
+#endif
   return 0;
 }
 

@@ -68,3 +68,8 @@ target_include_directories( osqp_codegen_embedded_mode2
 target_link_libraries( osqp_codegen_embedded_mode2 m )
 
 set_property(TARGET osqp_codegen_embedded_mode2 PROPERTY C_STANDARD 90)
+
+# Run the generated solvers as well as compiling their workspace initializers.
+enable_testing()
+add_test(NAME embedded_mode1 COMMAND osqp_codegen_embedded_mode1)
+add_test(NAME embedded_mode2 COMMAND osqp_codegen_embedded_mode2)

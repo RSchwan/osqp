@@ -273,6 +273,70 @@ OSQPInt OSQPVectorf_ew_bounds_type(OSQPVectori*       iseq,
                                    OSQPFloat          infval);
 
 
+/* Scale (invert = 0) or unscale (invert = 1) soft-constraint penalty
+   parameters in place, for a problem scaled by the objective factor c and the
+   constraint scaling E:
+
+     OSQP_PENALTY_L1L2 : alpha1 *= c/E,    alpha2 *= c/E^2
+     OSQP_PENALTY_HUBER: alpha1 *= c/E^2,  delta  *= E
+
+   Rows of type OSQP_PENALTY_NONE are left untouched. Scaling converts the
+   public OSQP_INFTY sentinel to IEEE infinity; unscaling converts it back.
+   Finite scaled values may exceed OSQP_INFTY. E may be NULL for unit scaling.
+   If type is OSQP_NULL every row takes default_type.
+ */
+void OSQPVectorf_ew_scale_penalty(OSQPVectorf*       alpha1,
+                                  OSQPVectorf*       alpha2,
+                                  OSQPVectorf*       delta,
+                                  const OSQPVectori* type,
+                                  OSQPInt            default_type,
+                                  OSQPFloat          c,
+                                  const OSQPVectorf* E,
+                                  OSQPInt            invert);
+
+
+/* Reset alpha1/alpha2/delta to IEEE infinity on every row whose penalty type
+   differs between (old_type, old_default) and (new_type, new_default).
+   Either type vector may be OSQP_NULL, in which case the matching default
+   applies to every row.
+ */
+void OSQPVectorf_ew_reset_changed_penalty(OSQPVectorf*       alpha1,
+                                          OSQPVectorf*       alpha2,
+                                          OSQPVectorf*       delta,
+                                          const OSQPVectori* old_type,
+                                          OSQPInt            old_default,
+                                          const OSQPVectori* new_type,
+                                          OSQPInt            new_default);
+
+/* Flags returned by OSQPVectorf_penalty_params_check */
+#define OSQP_PENALTY_ERR_NEGATIVE  (0x01)   /* alpha1 or alpha2 negative or NaN */
+#define OSQP_PENALTY_ERR_ZERO      (0x02)   /* L1L2 row with alpha1 == alpha2 == 0 */
+#define OSQP_PENALTY_ERR_HUBER_W   (0x04)   /* Huber row with alpha1 <= 0 */
+#define OSQP_PENALTY_ERR_HUBER_D   (0x08)   /* Huber row with delta <= 0 */
+
+/* Check every row's parameters against its penalty type. Returns 0 if all rows
+   are valid, otherwise the OR of the OSQP_PENALTY_ERR_* flags above.
+   scratch is a preallocated one-element integer vector for backend reductions.
+ */
+OSQPInt OSQPVectorf_penalty_params_check(const OSQPVectorf* alpha1,
+                                         const OSQPVectorf* alpha2,
+                                         const OSQPVectorf* delta,
+                                         const OSQPVectori* type,
+                                         OSQPInt            default_type,
+                                         OSQPVectori*       scratch);
+
+/* Summarize the penalty: any_soft is set if any row is not OSQP_PENALTY_NONE,
+   any_linear_growth if any soft row's penalty grows only linearly.
+   scratch is a preallocated one-element integer vector for backend reductions.
+ */
+void OSQPVectorf_penalty_flags(const OSQPVectorf* alpha2,
+                               const OSQPVectori* type,
+                               OSQPInt            default_type,
+                               OSQPInt*           any_soft,
+                               OSQPInt*           any_linear_growth,
+                               OSQPVectori*       scratch);
+
+
 /* Elementwise replacement based on lt comparison.
    x[i] = z[i] < testval ? newval : z[i];
 */

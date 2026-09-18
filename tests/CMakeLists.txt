@@ -59,6 +59,7 @@ add_subdirectory(derivative_adjoint)
 add_subdirectory(large_qp)
 add_subdirectory(lin_alg)
 add_subdirectory(non_cvx)
+add_subdirectory(penalty)
 add_subdirectory(primal_dual_infeasibility)
 add_subdirectory(primal_infeasibility)
 add_subdirectory(settings)
@@ -118,6 +119,25 @@ endif()
 target_link_libraries(osqp_tester osqpstatic Catch2::Catch2 ${osqplib_link_libs})
 
 add_test(NAME osqp_tester COMMAND osqp_tester)
+
+# Compile and run the workspaces produced by the codegen API tests, including
+# both embedded layouts. Generating files alone does not validate their C code.
+if(OSQP_CODEGEN AND OSQP_ALGEBRA_BUILTIN)
+  set_tests_properties(osqp_tester PROPERTIES FIXTURES_SETUP codegen_workspaces)
+  add_test(NAME codegen_compilation
+    COMMAND ${CMAKE_CTEST_COMMAND}
+      --build-and-test ${CMAKE_CURRENT_SOURCE_DIR}/codegen/compilation_test
+                       ${CMAKE_CURRENT_BINARY_DIR}/codegen_compilation
+      --build-generator "${CMAKE_GENERATOR}"
+      --build-options
+        -DOSQP_BUILD_DIR=${PROJECT_BINARY_DIR}
+        -DOSQP_TEST_CODEGEN_DIR=${CMAKE_CURRENT_BINARY_DIR}/testcodes
+        -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+      --test-command ${CMAKE_CTEST_COMMAND} --output-on-failure)
+  set_tests_properties(codegen_compilation PROPERTIES
+    FIXTURES_REQUIRED codegen_workspaces
+    DEPENDS osqp_tester_custom_memory)
+endif()
 
 # ----------------------------------------------
 # osqp_tester_custom_memory (only use with builtin algebra)

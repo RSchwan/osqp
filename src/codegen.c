@@ -338,7 +338,8 @@ static OSQPInt write_data(FILE*           f,
   fprintf(f, "  &%sdata_A,\n", prefix);
   fprintf(f, "  &%sdata_q,\n", prefix);
   fprintf(f, "  &%sdata_l,\n", prefix);
-  fprintf(f, "  &%sdata_u\n", prefix);
+  fprintf(f, "  &%sdata_u,\n", prefix);
+  fprintf(f, "  OSQP_NULL,\n"); /* penalty */
   fprintf(f, "};\n\n");
 
   return exitflag;
@@ -550,12 +551,14 @@ static OSQPInt write_workspace(FILE*             f,
   if (solver->settings->rho_is_vec) {
     fprintf(f, "  &%swork_rho_vec,\n", prefix);
     fprintf(f, "  &%swork_rho_inv_vec,\n", prefix);
+    fprintf(f, "  OSQP_NULL, OSQP_NULL, 0, 0,\n"); /* penalty workspace */
     if (embedded > 1) {
       fprintf(f, "  &%swork_constr_type,\n", prefix);
     }
   } else {
     fprintf(f, "  OSQP_NULL,\n");    /* work_rho_vec */
     fprintf(f, "  OSQP_NULL,\n");    /* work_rho_inv_vec */
+    fprintf(f, "  OSQP_NULL, OSQP_NULL, 0, 0,\n"); /* penalty workspace */
     if (embedded > 1) {
       fprintf(f, "  OSQP_NULL,\n");  /* work_constr_type */
     }

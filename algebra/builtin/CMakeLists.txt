@@ -12,6 +12,7 @@ target_sources(
           ../_common/csc_math.c
           ../_common/csc_utils.h
           ../_common/csc_utils.c
+          ../_common/vector_penalty.c
           algebra_impl.h
           algebra_libs.c
           vector.c
@@ -38,6 +39,7 @@ if( OSQP_CODEGEN )
        ${OSQP_ALGEBRA_ROOT}/_common/csc_math.c
        ${OSQP_ALGEBRA_ROOT}/_common/csc_utils.h
        ${OSQP_ALGEBRA_ROOT}/_common/csc_utils.c
+       ${OSQP_ALGEBRA_ROOT}/_common/vector_penalty.c
        ${OSQP_ALGEBRA_ROOT}/_common/kkt.h
        ${OSQP_ALGEBRA_ROOT}/_common/kkt.c
        ${OSQP_ALGEBRA_ROOT}/_common/lin_sys/qdldl/qdldl_interface.h

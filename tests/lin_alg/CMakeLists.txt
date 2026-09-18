@@ -25,6 +25,7 @@ set(LINALG_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/testcases/test_vector_creation.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/testcases/test_vector_comparisons.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/testcases/test_vector_math_ops.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/testcases/test_vector_penalty.cpp
 
     # Test data
     ${CMAKE_CURRENT_SOURCE_DIR}/lin_alg_tester.cpp

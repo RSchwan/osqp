@@ -364,6 +364,70 @@ OSQP_API OSQPInt osqp_update_data_vec(OSQPSolver*      solver,
                                       const OSQPFloat* l_new,
                                       const OSQPFloat* u_new);
 
+# ifndef OSQP_EMBEDDED_MODE
+
+/**
+ * Set up the soft-constraint penalty and choose which rows are soft.
+ *
+ * Allocates the penalty storage, so a solver that never calls this behaves
+ * exactly like a hard-constrained QP and carries no extra memory. Every
+ * parameter starts at OSQP_INFTY, which means the rows declared soft here still
+ * behave as hard ones until osqp_update_penalty_params supplies weights.
+ *
+ * Passing NULL for @p type gives every row @p default_type, which lets the
+ * solver use a specialized element-wise kernel instead of switching on a type
+ * per row.
+ *
+ * @param  solver       Solver
+ * @param  default_type Penalty type used when @p type is NULL, from osqp_penalty_type
+ * @param  type         Per-row penalty types (length m), NULL to use @p default_type
+ * @return              Exitflag for errors (0 if no errors)
+ */
+OSQP_API OSQPInt osqp_setup_penalty(OSQPSolver*    solver,
+                                    OSQPInt        default_type,
+                                    const OSQPInt* type);
+
+/**
+ * Change which constraint rows are soft, and with which penalty.
+ *
+ * Requires osqp_setup_penalty and allocates nothing. Changing a row's type
+ * resets that row's parameters, so it behaves as a hard row again until new
+ * weights are supplied.
+ *
+ * @param  solver       Solver
+ * @param  default_type Penalty type used when @p type is NULL, from osqp_penalty_type
+ * @param  type         Per-row penalty types (length m), NULL to use @p default_type
+ * @return              Exitflag for errors (0 if no errors)
+ */
+OSQP_API OSQPInt osqp_update_penalty_types(OSQPSolver*    solver,
+                                           OSQPInt        default_type,
+                                           const OSQPInt* type);
+
+/**
+ * Update the per-row parameters of the soft-constraint penalties.
+ *
+ * Which parameters a row uses depends on its penalty type:
+ *   - OSQP_PENALTY_NONE : none (ignored)
+ *   - OSQP_PENALTY_L1L2 : alpha1 >= 0 and alpha2 >= 0, not both zero
+ *   - OSQP_PENALTY_HUBER: alpha1 > 0 and delta > 0
+ *
+ * A parameter of OSQP_INFTY makes the row behave like a hard constraint, which
+ * is useful for continuation schemes. Requires osqp_setup_penalty and allocates
+ * nothing. Nothing is committed unless the result is valid for every row.
+ *
+ * @param  solver     Solver
+ * @param  alpha1_new New alpha1 values (length m), NULL if none
+ * @param  alpha2_new New alpha2 values (length m), NULL if none
+ * @param  delta_new  New delta values (length m), NULL if none
+ * @return            Exitflag for errors (0 if no errors)
+ */
+OSQP_API OSQPInt osqp_update_penalty_params(OSQPSolver*      solver,
+                                            const OSQPFloat* alpha1_new,
+                                            const OSQPFloat* alpha2_new,
+                                            const OSQPFloat* delta_new);
+
+# endif /* ifndef OSQP_EMBEDDED_MODE */
+
 # if OSQP_EMBEDDED_MODE != 1
 
 /**

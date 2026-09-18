@@ -68,16 +68,31 @@ typedef struct {
 **********************************/
 
 /**
+ * Soft-constraint penalty data (possibly internally scaled, like l and u).
+ * Active parameters use IEEE infinity internally for the public OSQP_INFTY
+ * sentinel; finite scaled parameters may exceed OSQP_INFTY.
+ */
+typedef struct {
+  OSQPInt      uniform;              ///< boolean; every row uses default_penalty_type and type is ignored
+  OSQPInt      default_penalty_type; ///< penalty type of every row while uniform
+  OSQPVectori* type;                 ///< per-row penalty type (size m)
+  OSQPVectorf* alpha1;               ///< penalty parameter, size m
+  OSQPVectorf* alpha2;               ///< penalty parameter, size m
+  OSQPVectorf* delta;                ///< penalty parameter, size m
+} OSQPPenaltyData;
+
+/**
  * QP problem data (possibly internally scaled)
  */
 typedef struct {
-  OSQPInt      n; ///< number of variables n
-  OSQPInt      m; ///< number of constraints m
-  OSQPMatrix*  P; ///< the upper triangular part of the quadratic objective matrix P (size n x n).
-  OSQPMatrix*  A; ///< linear constraints matrix A (size m x n)
-  OSQPVectorf* q; ///< dense array for linear part of objective function (size n)
-  OSQPVectorf* l; ///< dense array for lower bound (size m)
-  OSQPVectorf* u; ///< dense array for upper bound (size m)
+  OSQPInt          n;       ///< number of variables n
+  OSQPInt          m;       ///< number of constraints m
+  OSQPMatrix*      P;       ///< the upper triangular part of the quadratic objective matrix P (size n x n).
+  OSQPMatrix*      A;       ///< linear constraints matrix A (size m x n)
+  OSQPVectorf*     q;       ///< dense array for linear part of objective function (size n)
+  OSQPVectorf*     l;       ///< dense array for lower bound (size m)
+  OSQPVectorf*     u;       ///< dense array for upper bound (size m)
+  OSQPPenaltyData* penalty; ///< soft-constraint penalties, OSQP_NULL if all rows are hard
 } OSQPData;
 
 typedef struct {
@@ -114,6 +129,19 @@ struct OSQPWorkspace_ {
    */
   OSQPVectorf* rho_vec;     ///< vector of rho values
   OSQPVectorf* rho_inv_vec; ///< vector of inv rho values
+
+  /** @} */
+
+  /**
+   * @name Penalty summary flags
+   *
+   * Derived from OSQPData::penalty when the penalty is set.
+   * @{
+   */
+  OSQPVectori* penalty_type_tmp;     ///< staging for incoming per-row types, size m
+  OSQPVectori* penalty_flags_tmp;    ///< one-element scratch for backend reductions
+  OSQPInt penalty_any_soft;          ///< boolean; any row not OSQP_PENALTY_NONE
+  OSQPInt penalty_any_linear_growth; ///< boolean; any soft row growing only linearly
 
   /** @} */
 

@@ -6,6 +6,7 @@
 #include "osqp_api_types.h"
 #include "util.h"
 #include "scaling.h"
+#include "penalty.h"
 #include "error.h"
 #include "version.h"
 #include "lin_alg.h"
@@ -1066,6 +1067,9 @@ OSQPInt osqp_cleanup(OSQPSolver* solver) {
   if (work) { // If workspace has been allocated
     // Free algebra library handlers
     osqp_algebra_free_libs();
+
+    // Free the soft-constraint penalties
+    penalty_free(work);
 
     // Free Data
     if (work->data) {

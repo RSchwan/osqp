@@ -252,6 +252,67 @@ void OSQPVectorf_set_scalar_conditional(OSQPVectorf*       a,
   cuda_vec_set_sc_cond(a->d_val, test->d_val, sc_if_neg, sc_if_zero, sc_if_pos, a->length);
 }
 
+void OSQPVectorf_ew_scale_penalty(OSQPVectorf*       alpha1,
+                                  OSQPVectorf*       alpha2,
+                                  OSQPVectorf*       delta,
+                                  const OSQPVectori* type,
+                                  OSQPInt            default_type,
+                                  OSQPFloat          c,
+                                  const OSQPVectorf* E,
+                                  OSQPInt            invert) {
+
+  cuda_vec_scale_penalty(alpha1->d_val, alpha2->d_val, delta->d_val,
+                         type ? type->d_val : (const OSQPInt*)OSQP_NULL, default_type,
+                         c, E ? E->d_val : (const OSQPFloat*)OSQP_NULL, invert, alpha1->length);
+}
+
+void OSQPVectorf_ew_reset_changed_penalty(OSQPVectorf*       alpha1,
+                                          OSQPVectorf*       alpha2,
+                                          OSQPVectorf*       delta,
+                                          const OSQPVectori* old_type,
+                                          OSQPInt            old_default,
+                                          const OSQPVectori* new_type,
+                                          OSQPInt            new_default) {
+
+  cuda_vec_reset_changed_penalty(alpha1->d_val, alpha2->d_val, delta->d_val,
+                                 old_type ? old_type->d_val : (const OSQPInt*)OSQP_NULL, old_default,
+                                 new_type ? new_type->d_val : (const OSQPInt*)OSQP_NULL, new_default,
+                                 alpha1->length);
+}
+
+OSQPInt OSQPVectorf_penalty_params_check(const OSQPVectorf* alpha1,
+                                         const OSQPVectorf* alpha2,
+                                         const OSQPVectorf* delta,
+                                         const OSQPVectori* type,
+                                         OSQPInt            default_type,
+                                         OSQPVectori*       scratch) {
+
+  OSQPInt res;
+
+  cuda_vec_penalty_check(alpha1->d_val, alpha2->d_val, delta->d_val,
+                         type ? type->d_val : (const OSQPInt*)OSQP_NULL,
+                         default_type, alpha1->length, &res, scratch->d_val);
+
+  return res;
+}
+
+void OSQPVectorf_penalty_flags(const OSQPVectorf* alpha2,
+                               const OSQPVectori* type,
+                               OSQPInt            default_type,
+                               OSQPInt*           any_soft,
+                               OSQPInt*           any_linear_growth,
+                               OSQPVectori*       scratch) {
+
+  OSQPInt res;
+
+  cuda_vec_penalty_flags(alpha2->d_val,
+                         type ? type->d_val : (const OSQPInt*)OSQP_NULL,
+                         default_type, alpha2->length, &res, scratch->d_val);
+
+  *any_soft          = (res & 0x1) ? 1 : 0;
+  *any_linear_growth = (res & 0x2) ? 1 : 0;
+}
+
 void OSQPVectorf_round_to_zero(OSQPVectorf* a,
                                OSQPFloat    tol) {
   cuda_vec_round(a->d_val, tol, a->length);

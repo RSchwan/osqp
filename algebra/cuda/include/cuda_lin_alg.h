@@ -118,6 +118,63 @@ void cuda_vec_set_sc_cond(OSQPFloat*     d_a,
                           OSQPInt        n);
 
 /**
+ * Scale (invert = 0) or unscale (invert = 1) soft-constraint penalty
+ * parameters in place:
+ *
+ *   OSQP_PENALTY_L1L2 : a1 *= c/E,    a2 *= c/E^2
+ *   OSQP_PENALTY_HUBER: a1 *= c/E^2,  d  *= E
+ *
+ * Rows of type OSQP_PENALTY_NONE are untouched. Scaling converts the public
+ * OSQP_INFTY sentinel to IEEE infinity; unscaling converts it back.
+ * d_E may be NULL for unit scaling. d_type may be NULL to use default_type.
+ */
+void cuda_vec_scale_penalty(OSQPFloat*       d_a1,
+                            OSQPFloat*       d_a2,
+                            OSQPFloat*       d_d,
+                            const OSQPInt*   d_type,
+                            OSQPInt          default_type,
+                            OSQPFloat        c,
+                            const OSQPFloat* d_E,
+                            OSQPInt          invert,
+                            OSQPInt          n);
+
+/**
+ * Reset a1/a2/d to IEEE infinity on every row whose penalty type changes.
+ */
+void cuda_vec_reset_changed_penalty(OSQPFloat*     d_a1,
+                                    OSQPFloat*     d_a2,
+                                    OSQPFloat*     d_d,
+                                    const OSQPInt* d_old_type,
+                                    OSQPInt        old_default,
+                                    const OSQPInt* d_new_type,
+                                    OSQPInt        new_default,
+                                    OSQPInt        n);
+
+/**
+ * Check penalty parameters against their row types, returning the OR of the
+ * OSQP_PENALTY_ERR_* flags (0 if every row is valid).
+ */
+void cuda_vec_penalty_check(const OSQPFloat* d_a1,
+                            const OSQPFloat* d_a2,
+                            const OSQPFloat* d_d,
+                            const OSQPInt*   d_type,
+                            OSQPInt          default_type,
+                            OSQPInt          n,
+                            OSQPInt*         h_res,
+                            OSQPInt*         d_res);
+
+/**
+ * Summarize the penalty: bit 0 set if any row is soft, bit 1 if any soft row
+ * grows only linearly.
+ */
+void cuda_vec_penalty_flags(const OSQPFloat* d_a2,
+                            const OSQPInt*   d_type,
+                            OSQPInt          default_type,
+                            OSQPInt          n,
+                            OSQPInt*         h_res,
+                            OSQPInt*         d_res);
+
+/**
  * Round numbers within tol of 0 to 0.
  *
  * if |d_a[i]| < tol, then d_a[i] = 0.0

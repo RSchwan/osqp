@@ -15,6 +15,7 @@
  *  limitations under the License.
  */
 
+#include <math.h>
 #include "cuda_lin_alg.h"
 #include "cuda_configure.h"
 #include "cuda_handler.h"
@@ -75,6 +76,130 @@ __global__ void vec_set_sc_cond_kernel(OSQPFloat*     a,
     if (test[i] == 0)      a[i] = sc_if_zero;
     else if (test[i] > 0)  a[i] = sc_if_pos;
     else                   a[i] = sc_if_neg;
+  }
+}
+
+__device__ static OSQPFloat scale_penalty_weight(OSQPFloat weight,
+                                                 OSQPFloat factor,
+                                                 OSQPInt invert) {
+  if (invert)
+    return weight == (OSQPFloat)HUGE_VAL ? OSQP_INFTY : weight / factor;
+
+  return weight >= OSQP_INFTY ? (OSQPFloat)HUGE_VAL : weight * factor;
+}
+
+__global__ void vec_scale_penalty_kernel(OSQPFloat*       a1,
+                                         OSQPFloat*       a2,
+                                         OSQPFloat*       d,
+                                         const OSQPInt*   type,
+                                         OSQPInt          default_type,
+                                         OSQPFloat        c,
+                                         const OSQPFloat* E,
+                                         OSQPInt          invert,
+                                         OSQPInt          n) {
+
+  OSQPInt idx = threadIdx.x + blockDim.x * blockIdx.x;
+  OSQPInt grid_size = blockDim.x * gridDim.x;
+
+  for(OSQPInt i = idx; i < n; i += grid_size) {
+    OSQPFloat e = E ? E[i] : 1.0;
+    OSQPFloat f1, f2, fd;
+
+    switch (type ? type[i] : default_type) {
+      case OSQP_PENALTY_L1L2:
+        f1 = c / e;       f2 = c / (e * e); fd = 1.0;
+        break;
+
+      case OSQP_PENALTY_HUBER:
+        f1 = c / (e * e); f2 = 1.0;         fd = e;
+        break;
+
+      default:
+        continue;   // Hard row, parameters unused
+    }
+
+    a1[i] = scale_penalty_weight(a1[i], f1, invert);
+    a2[i] = scale_penalty_weight(a2[i], f2, invert);
+    d[i]  = scale_penalty_weight(d[i],  fd, invert);
+  }
+}
+
+__global__ void vec_reset_changed_penalty_kernel(OSQPFloat*     a1,
+                                                OSQPFloat*     a2,
+                                                OSQPFloat*     d,
+                                                const OSQPInt* old_type,
+                                                OSQPInt        old_default,
+                                                const OSQPInt* new_type,
+                                                OSQPInt        new_default,
+                                                OSQPInt        n) {
+
+  OSQPInt idx = threadIdx.x + blockDim.x * blockIdx.x;
+  OSQPInt grid_size = blockDim.x * gridDim.x;
+
+  for(OSQPInt i = idx; i < n; i += grid_size) {
+    OSQPInt told = old_type ? old_type[i] : old_default;
+    OSQPInt tnew = new_type ? new_type[i] : new_default;
+
+    if (told != tnew) {
+      a1[i] = (OSQPFloat)HUGE_VAL;
+      a2[i] = (OSQPFloat)HUGE_VAL;
+      d[i]  = (OSQPFloat)HUGE_VAL;
+    }
+  }
+}
+
+__global__ void vec_penalty_check_kernel(const OSQPFloat* a1,
+                                         const OSQPFloat* a2,
+                                         const OSQPFloat* d,
+                                         const OSQPInt*   type,
+                                         OSQPInt          default_type,
+                                         OSQPInt*         res,
+                                         OSQPInt          n) {
+
+  OSQPInt idx = threadIdx.x + blockDim.x * blockIdx.x;
+  OSQPInt grid_size = blockDim.x * gridDim.x;
+
+  for(OSQPInt i = idx; i < n; i += grid_size) {
+    switch (type ? type[i] : default_type) {
+      case OSQP_PENALTY_L1L2:
+        if (!(a1[i] >= 0.0) || !(a2[i] >= 0.0))    atomicOr(res, OSQP_PENALTY_ERR_NEGATIVE);
+        else if ((a1[i] <= 0.0) && (a2[i] <= 0.0)) atomicOr(res, OSQP_PENALTY_ERR_ZERO);
+        break;
+
+      case OSQP_PENALTY_HUBER:
+        if (!(a1[i] > 0.0)) atomicOr(res, OSQP_PENALTY_ERR_HUBER_W);
+        if (!(d[i]  > 0.0)) atomicOr(res, OSQP_PENALTY_ERR_HUBER_D);
+        break;
+
+      default:
+        break;
+    }
+  }
+}
+
+__global__ void vec_penalty_flags_kernel(const OSQPFloat* a2,
+                                         const OSQPInt*   type,
+                                         OSQPInt          default_type,
+                                         OSQPInt*         res,
+                                         OSQPInt          n) {
+
+  OSQPInt idx = threadIdx.x + blockDim.x * blockIdx.x;
+  OSQPInt grid_size = blockDim.x * gridDim.x;
+
+  for(OSQPInt i = idx; i < n; i += grid_size) {
+    switch (type ? type[i] : default_type) {
+      case OSQP_PENALTY_L1L2:
+        atomicOr(res, 0x1);
+        if (a2[i] <= 0.0) atomicOr(res, 0x2);
+        break;
+
+      case OSQP_PENALTY_HUBER:
+        atomicOr(res, 0x3);
+        break;
+
+      default:
+        break;
+    }
   }
 }
 
@@ -596,6 +721,71 @@ void cuda_vec_set_sc_cond(OSQPFloat*     d_a,
   OSQPInt number_of_blocks = (n / THREADS_PER_BLOCK) + 1;
 
   vec_set_sc_cond_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_a, d_test, sc_if_neg, sc_if_zero, sc_if_pos, n);
+}
+
+void cuda_vec_scale_penalty(OSQPFloat*       d_a1,
+                            OSQPFloat*       d_a2,
+                            OSQPFloat*       d_d,
+                            const OSQPInt*   d_type,
+                            OSQPInt          default_type,
+                            OSQPFloat        c,
+                            const OSQPFloat* d_E,
+                            OSQPInt          invert,
+                            OSQPInt          n) {
+
+  OSQPInt number_of_blocks = (n / THREADS_PER_BLOCK) + 1;
+
+  vec_scale_penalty_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_a1, d_a2, d_d, d_type, default_type, c, d_E, invert, n);
+}
+
+void cuda_vec_reset_changed_penalty(OSQPFloat*     d_a1,
+                                    OSQPFloat*     d_a2,
+                                    OSQPFloat*     d_d,
+                                    const OSQPInt* d_old_type,
+                                    OSQPInt        old_default,
+                                    const OSQPInt* d_new_type,
+                                    OSQPInt        new_default,
+                                    OSQPInt        n) {
+
+  OSQPInt number_of_blocks = (n / THREADS_PER_BLOCK) + 1;
+
+  vec_reset_changed_penalty_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_a1, d_a2, d_d, d_old_type, old_default, d_new_type, new_default, n);
+}
+
+void cuda_vec_penalty_check(const OSQPFloat* d_a1,
+                            const OSQPFloat* d_a2,
+                            const OSQPFloat* d_d,
+                            const OSQPInt*   d_type,
+                            OSQPInt          default_type,
+                            OSQPInt          n,
+                            OSQPInt*         h_res,
+                            OSQPInt*         d_res) {
+
+  OSQPInt number_of_blocks = (n / THREADS_PER_BLOCK) + 1;
+
+  *h_res = 0;
+  checkCudaErrors(cudaMemcpy(d_res, h_res, sizeof(OSQPInt), cudaMemcpyHostToDevice));
+
+  vec_penalty_check_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_a1, d_a2, d_d, d_type, default_type, d_res, n);
+
+  checkCudaErrors(cudaMemcpy(h_res, d_res, sizeof(OSQPInt), cudaMemcpyDeviceToHost));
+}
+
+void cuda_vec_penalty_flags(const OSQPFloat* d_a2,
+                            const OSQPInt*   d_type,
+                            OSQPInt          default_type,
+                            OSQPInt          n,
+                            OSQPInt*         h_res,
+                            OSQPInt*         d_res) {
+
+  OSQPInt number_of_blocks = (n / THREADS_PER_BLOCK) + 1;
+
+  *h_res = 0;
+  checkCudaErrors(cudaMemcpy(d_res, h_res, sizeof(OSQPInt), cudaMemcpyHostToDevice));
+
+  vec_penalty_flags_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_a2, d_type, default_type, d_res, n);
+
+  checkCudaErrors(cudaMemcpy(h_res, d_res, sizeof(OSQPInt), cudaMemcpyDeviceToHost));
 }
 
 void cuda_vec_round(OSQPFloat* d_a,
