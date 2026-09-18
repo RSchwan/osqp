@@ -15,6 +15,7 @@
  *  limitations under the License.
  */
 
+#include <float.h>
 #include <math.h>
 #include "cuda_lin_alg.h"
 #include "cuda_configure.h"
@@ -24,9 +25,11 @@
 #include "helper_cuda.h"    /* --> checkCudaErrors */
 
 #include "csr_type.h"
+#include "algebra_vector.h"
 #include "glob_opts.h"
 
 #include <thrust/gather.h>
+#include <thrust/pair.h>
 #include <thrust/reduce.h>
 #include <thrust/execution_policy.h>
 
@@ -216,17 +219,26 @@ __device__ static OSQPFloat penalty_conj_row(OSQPFloat y,
 
   OSQPFloat ay = c_absval(y);
   OSQPFloat t;
+#ifdef OSQP_USE_FLOAT
+  const OSQPFloat eps = FLT_EPSILON;
+#else
+  const OSQPFloat eps = DBL_EPSILON;
+#endif
 
   switch (type) {
     case OSQP_PENALTY_L1L2:
       /* Pure L1 has an indicator conjugate; an infinite quadratic weight
          has a zero conjugate. Handle both before any division or square. */
-      if (a2 <= 0.0) return ay <= a1 ? 0.0 : OSQP_INFTY;
+      if (a2 <= 0.0)
+        return ay <= a1 + 8.0 * eps * c_absval(a1) ? 0.0 : OSQP_INFTY;
       t = ay - a1;
       return t <= 0.0 ? 0.0 : (0.5 * t) * (t / a2);
 
     case OSQP_PENALTY_HUBER:
-      return ay <= a1 * d ? (0.5 * ay) * (ay / a1) : OSQP_INFTY;
+      t = a1 * d;
+      if (ay > t + 8.0 * eps * c_absval(t)) return OSQP_INFTY;
+      ay = c_min(ay, t);
+      return (0.5 * ay) * (ay / a1);
 
     default:
       return 0.0;   // Hard row, phi* = 0

@@ -235,6 +235,15 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/configure/osqp_configure.h.in
 # CUDA support
 # ----------------------------------------------
 if(OSQP_ALGEBRA_CUDA)
+  # Remember whether the caller selected architectures. CMake initializes this
+  # variable when CUDA is enabled, so checking only afterwards cannot
+  # distinguish its compiler default from a user override.
+  if(DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(OSQP_CUDA_ARCHITECTURES_USER_DEFINED ON)
+  else()
+    set(OSQP_CUDA_ARCHITECTURES_USER_DEFINED OFF)
+  endif()
+
   # Our backend uses both CUDA and C++
   enable_language(CXX)
   enable_language(CUDA)
@@ -243,15 +252,20 @@ if(OSQP_ALGEBRA_CUDA)
   # Locate the individual CUDA libraries and create targets for them
   find_package(CUDAToolkit)
 
-  # sm_75 -> Turing support
-  if(OSQP_USE_FLOAT)
-    set(CMAKE_CUDA_ARCHITECTURES 52 75)
-    # set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --gpu-architecture=compute_52 --gpu-code=sm_52,sm_75")
-  else()
-    # To use doubles we need compute capability 6.0 for atomic operations
-    set(CMAKE_CUDA_ARCHITECTURES 60 75)
-    # set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --gpu-architecture=compute_60 --gpu-code=sm_60,sm_75")
+  # Provide portable defaults while allowing callers to target their installed
+  # GPU explicitly. CUDA 13 dropped support for Maxwell and Pascal, so retain
+  # those architectures only for older toolkits.
+  if(NOT OSQP_CUDA_ARCHITECTURES_USER_DEFINED)
+    if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
+      set(CMAKE_CUDA_ARCHITECTURES 75 120)
+    elseif(OSQP_USE_FLOAT)
+      set(CMAKE_CUDA_ARCHITECTURES 52 75)
+    else()
+      # To use doubles we need compute capability 6.0 for atomic operations.
+      set(CMAKE_CUDA_ARCHITECTURES 60 75)
+    endif()
   endif()
+  unset(OSQP_CUDA_ARCHITECTURES_USER_DEFINED)
 endif()
 
 
