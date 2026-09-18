@@ -20,6 +20,24 @@ void penalty_project(OSQPSolver*        solver,
                      const OSQPVectorf* v);
 
 /**
+ * Penalty part of the primal objective, Phi(R(z)), on the scaled data.
+ * Zero when no penalty is set up.
+ * @param  solver Solver
+ * @param  z      Constraint iterate
+ */
+OSQPFloat penalty_obj_value(const OSQPSolver*  solver,
+                            const OSQPVectorf* z);
+
+/**
+ * Penalty part of the dual objective, Phi*(y), on the scaled data.
+ * OSQP_INFTY if y lies outside dom Phi*, zero when no penalty is set up.
+ * @param  solver Solver
+ * @param  y      Dual iterate
+ */
+OSQPFloat penalty_conj_value(const OSQPSolver*  solver,
+                             const OSQPVectorf* y);
+
+/**
  * Per-row penalty types, or OSQP_NULL when every row uses the default.
  * @param  solver Solver
  */

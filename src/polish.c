@@ -477,6 +477,7 @@ OSQPInt polish(OSQPSolver* solver) {
   if (polish_successful) {
     // Update solver information
     info->obj_val       = work->pol->obj_val;
+    info->penalty_val   = work->pol->penalty_val;
     info->dual_obj_val  = work->pol->dual_obj_val;
     info->duality_gap   = work->pol->duality_gap;
     info->prim_res      = work->pol->prim_res;

@@ -140,6 +140,7 @@ struct Reference {
   OSQPFloat x[Problem::n];
   OSQPFloat y[Problem::m];
   OSQPFloat xi[Problem::m];
+  OSQPFloat obj;              ///< primal objective, penalty term included
 };
 
 void tighten(OSQPSettings*  s,
@@ -151,18 +152,18 @@ void tighten(OSQPSettings*  s,
   s->max_iter   = MAX_ITER;
   s->polishing  = 0;  /* Polishing is only guarded against soft rows in chunk 6 */
   s->rho_is_vec = opts.rho_is_vec;
-
-  /* The dual objective is still missing Phi*(y) until chunk 5, so the gap is
-     wrong on soft rows and would block termination. Both problems are solved
-     with it off so that the comparison stays apples to apples. */
-  s->check_dualgap = 0;
+  s->check_dualgap = 1;  /* Exercise the new gap as a termination criterion */
 }
 
 /* Solve the soft problem through the penalty API */
 std::vector<OSQPFloat> solve_soft(const Problem&              prob,
                                   const std::vector<Penalty>& pen,
                                   const Options&              opts,
-                                  std::vector<OSQPFloat>&     y_out) {
+                                  std::vector<OSQPFloat>&     y_out,
+                                  OSQPFloat*                  obj_out = OSQP_NULL,
+                                  OSQPFloat*                  pen_out = OSQP_NULL,
+                                  OSQPFloat*                  gap_out = OSQP_NULL,
+                                  OSQPFloat*                  dual_out = OSQP_NULL) {
 
   OwnedCsc_ptr P = to_csc(prob.n, prob.n, {prob.P_diag[0], 0.0, 0.0, prob.P_diag[1]});
   OwnedCsc_ptr A = to_csc(prob.m, prob.n, prob.A);
@@ -203,6 +204,11 @@ std::vector<OSQPFloat> solve_soft(const Problem&              prob,
   std::vector<OSQPFloat> x(solver->solution->x, solver->solution->x + prob.n);
   y_out.assign(solver->solution->y, solver->solution->y + prob.m);
 
+  if (obj_out) *obj_out = solver->info->obj_val;
+  if (pen_out) *pen_out = solver->info->penalty_val;
+  if (gap_out)  *gap_out  = solver->info->duality_gap;
+  if (dual_out) *dual_out = solver->info->dual_obj_val;
+
   return x;
 }
 
@@ -213,7 +219,8 @@ std::vector<OSQPFloat> solve_soft(const Problem&              prob,
 std::vector<OSQPFloat> solve_lifted(const Problem&              prob,
                                     const std::vector<Penalty>& pen,
                                     std::vector<OSQPFloat>&     y_out,
-                                    std::vector<OSQPFloat>&     xi_out) {
+                                    std::vector<OSQPFloat>&     xi_out,
+                                    OSQPFloat*                  obj_out = OSQP_NULL) {
 
   const OSQPInt n = prob.n;
   const OSQPInt m = prob.m;
@@ -306,6 +313,8 @@ std::vector<OSQPFloat> solve_lifted(const Problem&              prob,
   std::vector<OSQPFloat> x(solver->solution->x, solver->solution->x + n);
   y_out.assign(solver->solution->y, solver->solution->y + m);
 
+  if (obj_out) *obj_out = solver->info->obj_val;
+
   /* The eliminated slack, reassembled from the lift */
   xi_out.assign(m, 0.0);
   for (OSQPInt i = 0; i < m; i++) {
@@ -326,12 +335,18 @@ void check_against_lift(const std::vector<Penalty>& pen,
 
   Problem prob{opts};
   std::vector<OSQPFloat> y_soft;
+  OSQPFloat obj_soft = 0.0, pen_soft = 0.0, gap_soft = 0.0, dual_soft = 0.0;
 
-  std::vector<OSQPFloat> x_soft = solve_soft(prob, pen, opts, y_soft);
+  std::vector<OSQPFloat> x_soft = solve_soft(prob, pen, opts, y_soft, &obj_soft,
+                                             &pen_soft, &gap_soft, &dual_soft);
 
 #ifndef OSQP_USE_FLOAT
   std::vector<OSQPFloat> y_ref, xi_ref;
-  std::vector<OSQPFloat> x_ref = solve_lifted(prob, pen, y_ref, xi_ref);
+  OSQPFloat obj_ref = 0.0;
+  std::vector<OSQPFloat> x_ref = solve_lifted(prob, pen, y_ref, xi_ref, &obj_ref);
+
+  mu_assert("The stored reference objective no longer matches the lift",
+            c_absval(obj_ref - ref.obj) < REF_TOL);
 
   mu_assert("The stored reference no longer matches the lifted problem",
             vec_norm_inf_diff(x_ref.data(), ref.x, prob.n) < REF_TOL);
@@ -355,6 +370,28 @@ void check_against_lift(const std::vector<Penalty>& pen,
             vec_norm_inf_diff(x_soft.data(), ref.x, prob.n) < COMPARE_TOL);
   mu_assert("Soft dual differs from the lifted reference",
             vec_norm_inf_diff(y_soft.data(), ref.y, prob.m) < COMPARE_TOL);
+
+  /* The lifted objective carries the penalty in its extra variables, so an
+     obj_val missing Phi(R(z)) would not match it */
+  mu_assert("Objective differs from the lifted reference",
+            c_absval(obj_soft - ref.obj) < COMPARE_TOL);
+
+  /* ... and the split reported in info has to add up */
+  OSQPFloat quad = 0.0;
+  for (OSQPInt j = 0; j < prob.n; j++)
+    quad += 0.5 * prob.P_diag[j] * x_soft[j] * x_soft[j] + prob.q[j] * x_soft[j];
+
+  mu_assert("penalty_val is not the penalty part of obj_val",
+            c_absval((obj_soft - pen_soft) - quad) < COMPARE_TOL);
+
+  /* The solve ran with check_dualgap on, so this also proves the gap is a
+     usable termination criterion and not merely small after the fact */
+  mu_assert("The duality gap does not close on a soft problem",
+            c_absval(gap_soft) < COMPARE_TOL);
+
+  /* The dual objective needs Phi*(y) to reach the primal one */
+  mu_assert("The dual objective does not meet the primal one",
+            c_absval(dual_soft - obj_soft) < COMPARE_TOL);
 }
 
 } // namespace
@@ -369,7 +406,8 @@ TEST_CASE("Soft QP: quadratic penalty", "[penalty],[solve]")
 
   Reference ref{{0.687234042547, 0.776595744674},
                 {0.093617021277, 0.138297872340, 0.531914893617},
-                {-0.187234042549, -0.276595744677, -1.063829787231}};
+                {-0.187234042549, -0.276595744677, -1.063829787231},
+                -2.016489361696};
 
   SECTION("Per-row type vector") { check_against_lift(pen, ref); }
 
@@ -398,7 +436,8 @@ TEST_CASE("Soft QP: L1 penalty", "[penalty],[solve]")
                       {OSQP_PENALTY_L1L2, 0.1, 0.0, 1.0}},
                      {{0.8999999999999, 0.933333333333},
                       {0.100000000887, 0.100000000887, 0.099999999113},
-                      {-0.399999997324, -0.433333330658, -1.433333336008}});
+                      {-0.399999997324, -0.433333330658, -1.433333},
+                      -2.256666667068});
 }
 
 TEST_CASE("Soft QP: elastic net penalty", "[penalty],[solve]")
@@ -408,7 +447,8 @@ TEST_CASE("Soft QP: elastic net penalty", "[penalty],[solve]")
                       {OSQP_PENALTY_L1L2, 0.1, 0.5, 1.0}},
                      {{0.627659574469, 0.734042553190},
                       {0.163829787863, 0.217021277232, 0.580851063198},
-                      {-0.127659574677, -0.234042553388, -0.961702127455}});
+                      {-0.127659574677, -0.234042553388, -0.961702},
+                      -1.873936170210});
 }
 
 TEST_CASE("Soft QP: Huber penalty", "[penalty],[solve]")
@@ -421,7 +461,8 @@ TEST_CASE("Soft QP: Huber penalty", "[penalty],[solve]")
 
     Reference ref{{0.974999999994, 0.983333333325},
                   {0.024999999512, 0.024999999516, 0.025000000487},
-                  {-0.474999998528, -0.483333331804, -1.558333334466}};
+                  {-0.474999998528, -0.483333331804, -1.558333334466},
+                -2.437916666702};
 
     check_against_lift({{OSQP_PENALTY_HUBER, 0.5, 0.0, delta},
                         {OSQP_PENALTY_HUBER, 0.5, 0.0, delta},
@@ -443,7 +484,8 @@ TEST_CASE("Soft QP: Huber penalty", "[penalty],[solve]")
     // case with alpha2 = 0.5 and must land on the same solution
     Reference ref{{0.687234042554, 0.776595744681},
                   {0.093617021276, 0.138297872340, 0.531914893617},
-                  {-0.187234042554, -0.276595744681, -1.063829787234}};
+                  {-0.187234042554, -0.276595744681, -1.063829787234},
+                -2.016489361913};
 
     check_against_lift({{OSQP_PENALTY_HUBER, 0.5, 0.0, delta},
                         {OSQP_PENALTY_HUBER, 0.5, 0.0, delta},
@@ -468,7 +510,8 @@ TEST_CASE("Soft QP: per-row penalty types", "[penalty],[solve]")
                       {OSQP_PENALTY_L1L2, 0.1, 0.0, 1.0}},
                      {{0.299999999999, 0.899999999970},
                       {1.299999999912, 0.200000000001, 0.100000000088},
-                      {0.0, -0.400000000002, -0.799999999765}}, opts);
+                      {0.0, -0.400000000002, -0.799999999765},
+                      -1.875000000023}, opts);
 
   // ... and with Huber in the mix
   check_against_lift({{OSQP_PENALTY_NONE,  0.0, 0.0, 0.0},
@@ -476,7 +519,8 @@ TEST_CASE("Soft QP: per-row penalty types", "[penalty],[solve]")
                       {OSQP_PENALTY_L1L2,  0.1, 0.5, 1.0}},
                      {{0.299999999999, 0.835714285729},
                       {0.932142857218, 0.025000000031, 0.467857142782},
-                      {0.0, -0.335714285781, -0.735714285531}}, opts);
+                      {0.0, -0.335714285781, -0.735714285531},
+                      -1.752857143}, opts);
 }
 
 TEST_CASE("Soft QP: a large weight approaches the hard problem", "[penalty],[solve]")
@@ -485,7 +529,7 @@ TEST_CASE("Soft QP: a large weight approaches the hard problem", "[penalty],[sol
   // well defined and its limit is the hard QP. Infinite weights are rejected --
   // a hard row is spelled OSQP_PENALTY_NONE -- so the limit is approached with
   // a large finite weight instead.
-  const Reference hard{{0.04, 0.36}, {0.0, 0.0, 1.92}, {0.0, 0.0, 0.0}};
+  const Reference hard{{0.04, 0.36}, {0.0, 0.0, 1.92}, {0.0, 0.0, 0.0}, -0.964};
 
   Options opts;
   Problem prob{opts};

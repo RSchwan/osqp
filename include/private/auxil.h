@@ -91,14 +91,18 @@ void update_y(OSQPSolver* solver);
  * @param  solver       Solver
  * @param  x            Primal values x
  * @param  y            Dual values y
+ * @param  z            Constraint values z, for the soft-constraint penalty
  * @param  prim_obj_val Primal objective function value
+ * @param  penalty_val  Soft-constraint penalty part of prim_obj_val
  * @param  dual_obj_val Dual objective function value
  * @param  duality_gap  Duality gap value
  */
 void compute_obj_val_dual_gap(const OSQPSolver*  solver,
                               const OSQPVectorf* x,
                               const OSQPVectorf* y,
+                              const OSQPVectorf* z,
                                     OSQPFloat*   prim_obj_val,
+                                    OSQPFloat*   penalty_val,
                                     OSQPFloat*   dual_obj_val,
                                     OSQPFloat*   duality_gap);
 

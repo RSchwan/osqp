@@ -935,8 +935,9 @@ osqp_profiler_sec_push(OSQP_PROFILER_SEC_OPT_SOLVE);
   // Compute objective value in case it was not
   // computed during the iterations
   if (has_solution(solver->info)){
-    compute_obj_val_dual_gap(solver, work->x, work->y,
+    compute_obj_val_dual_gap(solver, work->x, work->y, work->z,
                              &(solver->info->obj_val),
+                             &(solver->info->penalty_val),
                              &(solver->info->dual_obj_val),
                              &(solver->info->duality_gap));
   }

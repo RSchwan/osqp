@@ -277,6 +277,36 @@ TEST_CASE("Penalty: primal infeasibility only follows from hard rows", "[penalty
 }
 
 
+TEST_CASE("Penalty: a hard problem reports no penalty", "[penalty],[solve]")
+{
+  // info->penalty_val must stay at zero for a solver that never sets a penalty
+  OwnedCsc_ptr P = to_csc(2, 2, {2.0, 0.0, 0.0, 2.0});
+  OwnedCsc_ptr A = to_csc(3, 2, {1.0, 0.0,
+                                 0.0, 1.0,
+                                 1.0, 1.0});
+
+  OSQPFloat q[2] = {-1.0, -1.0};
+  OSQPFloat l[3] = {0.25, -0.5, -OSQP_INFTY};
+  OSQPFloat u[3] = {0.25,  0.5,  OSQP_INFTY};
+
+  OSQPSettings_ptr settings{OSQPSettings_new()};
+  settings->verbose = 0;
+
+  OSQPSolver* tmp = nullptr;
+  mu_assert("setup error",
+            osqp_setup(&tmp, P.get(), q, A.get(), l, u, 3, 2, settings.get()) == 0);
+  OSQPSolver_ptr solver{tmp};
+
+  /* Prove the objective update writes the hard-path value rather than merely
+     observing OSQPInfo's zero initialization. */
+  solver->info->penalty_val = 1.0;
+  osqp_solve(solver.get());
+
+  REQUIRE(solver->info->status_val == OSQP_SOLVED);
+  mu_assert("A hard problem reported a nonzero penalty",
+            solver->info->penalty_val == 0.0);
+}
+
 TEST_CASE("Penalty: dual infeasibility and penalty growth", "[penalty],[solve]")
 {
   /* min x subject to a single row, unbounded below along x -> -inf */

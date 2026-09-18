@@ -223,6 +223,7 @@ static OSQPInt write_info(FILE*           f,
   fprintf(f, "  %d,\n", OSQP_UNSOLVED);
   fprintf(f, "  0,\n"); // status_polish
   fprintf(f, "  (OSQPFloat)%.20f,\n", OSQP_INFTY); // obj_val
+  fprintf(f, "  (OSQPFloat)0.0,\n"); // penalty_val
   fprintf(f, "  (OSQPFloat)%.20f,\n", OSQP_INFTY); // dual_obj_val
   fprintf(f, "  (OSQPFloat)%.20f,\n", OSQP_INFTY); // prim_res
   fprintf(f, "  (OSQPFloat)%.20f,\n", OSQP_INFTY); // dual_res
@@ -578,6 +579,8 @@ static OSQPInt write_workspace(FILE*             f,
   fprintf(f, "  (OSQPFloat)0.0,\n");  /* xtPx */
   fprintf(f, "  (OSQPFloat)0.0,\n");  /* qtx */
   fprintf(f, "  (OSQPFloat)0.0,\n");  /* SC */
+  fprintf(f, "  (OSQPFloat)0.0,\n");  /* penalty_prim */
+  fprintf(f, "  (OSQPFloat)0.0,\n");  /* penalty_dual */
   fprintf(f, "  (OSQPFloat)0.0,\n");  /* scaled_dual_gap */
   fprintf(f, "  &%swork_delta_y,\n", prefix);
   fprintf(f, "  &%swork_Atdelta_y,\n", prefix);

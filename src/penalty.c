@@ -49,6 +49,38 @@ void penalty_project(OSQPSolver*        solver,
                               penalty_types(pen), pen->default_penalty_type);
 }
 
+/* Phi(R(z)), the penalty contribution to the primal objective. Scaled like the
+ * rest of the objective, since the scaled penalty is c*phi(s/E). */
+OSQPFloat penalty_obj_value(const OSQPSolver*  solver,
+                            const OSQPVectorf* z) {
+
+  OSQPWorkspace*   work = solver->work;
+  OSQPPenaltyData* pen  = work->data->penalty;
+
+  if (!pen) return 0.0;
+
+  return OSQPVectorf_penalty_value(z, work->data->l, work->data->u,
+                                   pen->alpha1, pen->alpha2, pen->delta,
+                                   penalty_types(pen), pen->default_penalty_type,
+                                   work->penalty_val_tmp);
+}
+
+/* Phi*(y), the penalty contribution to the dual objective. OSQP_INFTY if y is
+ * outside dom Phi*, which ADMM iterates never are but polish and warm starts
+ * can be. */
+OSQPFloat penalty_conj_value(const OSQPSolver*  solver,
+                             const OSQPVectorf* y) {
+
+  OSQPWorkspace*   work = solver->work;
+  OSQPPenaltyData* pen  = work->data->penalty;
+
+  if (!pen) return 0.0;
+
+  return OSQPVectorf_penalty_conj_value(y, pen->alpha1, pen->alpha2, pen->delta,
+                                        penalty_types(pen), pen->default_penalty_type,
+                                        work->penalty_val_tmp);
+}
+
 #if OSQP_EMBEDDED_MODE != 1
 
 /* Scale or unscale the penalty parameters in place, like l and u */

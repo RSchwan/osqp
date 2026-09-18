@@ -55,6 +55,7 @@ typedef struct {
   OSQPVectorf* z;             ///< optimal z-solution obtained by polish
   OSQPVectorf* y;             ///< optimal y-solution obtained by polish
   OSQPFloat    obj_val;       ///< objective value at polished solution
+  OSQPFloat    penalty_val;   ///< penalty part of obj_val at polished solution
   OSQPFloat    dual_obj_val;  ///< Dual objective value at polished solution
   OSQPFloat    duality_gap;   ///< Duality gap at polished solution
   OSQPFloat    prim_res;      ///< primal residual at polished solution
@@ -187,6 +188,8 @@ struct OSQPWorkspace_ {
   OSQPFloat    xtPx;            ///< scaled x' * P *x
   OSQPFloat    qtx;             ///< scaled q' * x
   OSQPFloat    SC;              ///< scaled support function value
+  OSQPFloat    penalty_prim;    ///< scaled Phi(R(z)), the penalty part of the primal objective
+  OSQPFloat    penalty_dual;    ///< scaled Phi*(y), the penalty part of the dual objective
   OSQPFloat    scaled_dual_gap; ///< scaled primal-dual gap
 
   /** @} */

@@ -136,6 +136,7 @@ typedef struct {
 
   // solution quality
   OSQPFloat obj_val;      ///< Primal objective value
+  OSQPFloat penalty_val;  ///< Soft-constraint penalty part of obj_val, 0 if no penalty is set up
   OSQPFloat dual_obj_val; ///< Dual objective value
   OSQPFloat prim_res;     ///< Norm of primal residual
   OSQPFloat dual_res;     ///< Norm of dual residual

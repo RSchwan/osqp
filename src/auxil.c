@@ -236,12 +236,16 @@ void update_y(OSQPSolver* solver) {
 void compute_obj_val_dual_gap(const OSQPSolver*  solver,
                               const OSQPVectorf* x,
                               const OSQPVectorf* y,
+                              const OSQPVectorf* z,
                                     OSQPFloat*   prim_obj_val,
+                                    OSQPFloat*   penalty_val,
                                     OSQPFloat*   dual_obj_val,
                                     OSQPFloat*   duality_gap) {
   OSQPFloat quad_term = 0.0;
   OSQPFloat lin_term  = 0.0;
   OSQPFloat sup_term  = 0.0;
+  OSQPFloat pen_term  = 0.0;
+  OSQPFloat conj_term = 0.0;
   OSQPWorkspace* work = solver->work;
 
   /* NB: The function is always called after dual_res is computed */
@@ -250,35 +254,42 @@ void compute_obj_val_dual_gap(const OSQPSolver*  solver,
 
   /* Compute the support function of the constraints, SC(y) = u'*max(y, 0) + l'*min(y, 0)
      by projecting y onto the polar of the recession cone of C=[l,u], then doing the dot products */
-  /* Soft rows are free here: a finitely penalized row contributes Phi*(y), not
-     a support-function term (chunk 5 adds it) */
+  /* NB: soft rows keep their bounds here. g = I_[l,u] inf-conv Phi gives
+     g*(y) = SC(y) + Phi*(y), so the support function is over the real [l,u]
+     and the penalty enters only through the Phi*(y) term below. Only the
+     infeasibility certificates treat a soft row as free. */
   OSQPVectorf_copy(work->z_prev, y);
   OSQPVectorf_project_polar_reccone(work->z_prev,
                                     work->data->l,
                                     work->data->u,
-                                    penalty_row_types(solver),
-                                    penalty_default_type(solver),
+                                    OSQP_NULL, OSQP_PENALTY_NONE,
                                     OSQP_INFTY * OSQP_MIN_SCALING);
 
   // Round anything in the range [-OSQP_ZERO_DEADZONE, OSQP_ZERO_DEADZONE] to 0 to
   // prevent very small (i.e., 1e-20) values from blowing up the numerics.
   OSQPVectorf_round_to_zero(work->z_prev, OSQP_ZERO_DEADZONE);
 
-  /* NB: soft rows need no special case here, the projection above zeroed them */
   sup_term  = OSQPVectorf_dot_prod_signed(work->data->u, work->z_prev, +1);
   sup_term += OSQPVectorf_dot_prod_signed(work->data->l, work->z_prev, -1);
 
-  /* Primal objective value is 0.5*x^T P x + q^T x */
-  *prim_obj_val = 0.5 * quad_term + lin_term;
+  /* The penalty terms, which are zero unless a penalty is set up. Both scale
+     by c like the terms above, so the unscaling below covers them too. */
+  pen_term  = penalty_obj_value(solver, z);
+  conj_term = penalty_conj_value(solver, y);
 
-  /* Dual objective value is -0.5*x^T P x - SC(y)*/
-  *dual_obj_val = -0.5 * quad_term - sup_term;
+  /* Primal objective value is 0.5*x^T P x + q^T x + Phi(R(z)) */
+  *prim_obj_val = 0.5 * quad_term + lin_term + pen_term;
+  *penalty_val  = pen_term;
 
-  /* Duality gap is x^T P x + q^T x + SC(y) */
-  work->scaled_dual_gap = quad_term + lin_term + sup_term;
+  /* Dual objective value is -0.5*x^T P x - SC(y) - Phi*(y) */
+  *dual_obj_val = -0.5 * quad_term - sup_term - conj_term;
+
+  /* Duality gap is x^T P x + q^T x + Phi(R(z)) + SC(y) + Phi*(y) */
+  work->scaled_dual_gap = quad_term + lin_term + pen_term + sup_term + conj_term;
 
   if (solver->settings->scaling) {
     *prim_obj_val *= work->scaling->cinv;
+    *penalty_val  *= work->scaling->cinv;
     *dual_obj_val *= work->scaling->cinv;
 
     // We always store the duality gap in the info as unscaled (since it is for the user),
@@ -289,9 +300,11 @@ void compute_obj_val_dual_gap(const OSQPSolver*  solver,
   }
 
   /* Save cost values for later use in termination tolerance computation */
-  work->xtPx = quad_term;
-  work->qtx  = lin_term;
-  work->SC   = sup_term;
+  work->xtPx         = quad_term;
+  work->qtx          = lin_term;
+  work->SC           = sup_term;
+  work->penalty_prim = pen_term;
+  work->penalty_dual = conj_term;
 }
 
 static OSQPFloat compute_duality_gap_tol(const OSQPSolver* solver,
@@ -301,10 +314,12 @@ static OSQPFloat compute_duality_gap_tol(const OSQPSolver* solver,
   OSQPSettings*  settings = solver->settings;
   OSQPWorkspace* work     = solver->work;
 
-  /* Compute max{ |x'*P*x|, |q'*x|, |SC(y)|} */
-  max_rel_eps = c_absval(work->xtPx);                     /* |x'P*x| */
-  max_rel_eps = c_max(max_rel_eps, c_absval(work->qtx));  /* |q'*x| */
-  max_rel_eps = c_max(max_rel_eps, c_absval(work->SC));   /* |SC(y)| */
+  /* Compute max{ |x'*P*x|, |q'*x|, |SC(y)|, |Phi(R(z))|, |Phi*(y)|} */
+  max_rel_eps = c_absval(work->xtPx);                              /* |x'P*x| */
+  max_rel_eps = c_max(max_rel_eps, c_absval(work->qtx));           /* |q'*x| */
+  max_rel_eps = c_max(max_rel_eps, c_absval(work->SC));            /* |SC(y)| */
+  max_rel_eps = c_max(max_rel_eps, c_absval(work->penalty_prim));  /* |Phi(R(z))| */
+  max_rel_eps = c_max(max_rel_eps, c_absval(work->penalty_dual));  /* |Phi*(y)| */
 
   /* Unscale the termination tolerance if required*/
   if (settings->scaling && !settings->scaled_termination) {
@@ -710,6 +725,7 @@ void update_info(OSQPSolver* solver,
 
   // objective value, residuals
   OSQPFloat* prim_obj_val;
+  OSQPFloat* penalty_val;
   OSQPFloat* dual_obj_val;
   OSQPFloat* dual_gap;
   OSQPFloat* prim_res;
@@ -729,6 +745,7 @@ void update_info(OSQPSolver* solver,
     y            = work->pol->y;
     z            = work->pol->z;
     prim_obj_val = &work->pol->obj_val;
+    penalty_val  = &work->pol->penalty_val;
     dual_obj_val = &work->pol->dual_obj_val;
     dual_gap     = &work->pol->duality_gap;
     prim_res     = &work->pol->prim_res;
@@ -743,6 +760,7 @@ void update_info(OSQPSolver* solver,
     y            = work->y;
     z            = work->z;
     prim_obj_val = &info->obj_val;
+    penalty_val  = &info->penalty_val;
     dual_obj_val = &info->dual_obj_val;
     dual_gap     = &info->duality_gap;
     prim_res     = &info->prim_res;
@@ -768,7 +786,8 @@ void update_info(OSQPSolver* solver,
   *dual_res = compute_dual_res(solver, x, y);
 
   // Compute the objective and duality gap, store various temp values in work
-  compute_obj_val_dual_gap(solver, x, y, prim_obj_val, dual_obj_val, dual_gap);
+  compute_obj_val_dual_gap(solver, x, y, z, prim_obj_val, penalty_val,
+                           dual_obj_val, dual_gap);
 
   // Compute the duality gap integral
   if (!polishing) {
@@ -862,7 +881,8 @@ OSQPInt check_termination(OSQPSolver* solver,
     // Looks like residuals are diverging. Probably the problem is non convex!
     // Terminate and report it
     update_status(info, OSQP_NON_CVX);
-    info->obj_val = OSQP_NAN;
+    info->obj_val     = OSQP_NAN;
+    info->penalty_val = OSQP_NAN;
     return 1;
   }
 
@@ -947,7 +967,8 @@ OSQPInt check_termination(OSQPSolver* solver,
                           work->delta_y,
                           work->scaling->E);
     }
-    info->obj_val = OSQP_INFTY;
+    info->obj_val     = OSQP_INFTY;
+    info->penalty_val = OSQP_NAN;
     exitflag            = 1;
   }
   else if (dual_inf_check) {
@@ -964,7 +985,8 @@ OSQPInt check_termination(OSQPSolver* solver,
                           work->delta_x,
                           work->scaling->D);
     }
-    info->obj_val = -OSQP_INFTY;
+    info->obj_val     = -OSQP_INFTY;
+    info->penalty_val = OSQP_NAN;
     exitflag            = 1;
   }
 
