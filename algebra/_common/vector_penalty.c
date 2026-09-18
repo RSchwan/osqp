@@ -171,6 +171,82 @@ OSQPFloat OSQPVectorf_penalty_value(const OSQPVectorf* z,
   return val;
 }
 
+/* Recession rate of one row along w. Hard and superlinear rows return infinity
+ * when the direction leaves the bound recession cone. */
+static OSQPFloat penalty_reccone_rate_row(OSQPFloat w,
+                                          OSQPFloat l,
+                                          OSQPFloat u,
+                                          OSQPInt   type,
+                                          OSQPFloat a1,
+                                          OSQPFloat a2,
+                                          OSQPFloat d,
+                                          OSQPFloat infval,
+                                          OSQPFloat tol) {
+
+  OSQPFloat slope;
+  OSQPFloat dist;
+
+  /* Distance from rec[l,u]. Linear penalties charge the exact distance;
+     tol only relaxes the membership test for blocking rows. */
+  if ((u < +infval) && (w > 0.0))      dist = w;
+  else if ((l > -infval) && (w < 0.0)) dist = -w;
+  else                                 return 0.0;
+
+  switch (type) {
+    case OSQP_PENALTY_L1L2:
+      if (a2 > 0.0) return dist > tol ? OSQP_INFTY : 0.0;
+      slope = a1;
+      break;
+
+    case OSQP_PENALTY_HUBER:
+      /* NB: the asymptotic slope of alpha1*h_delta is alpha1*delta */
+      slope = a1 * d;
+      break;
+
+    default:
+      return dist > tol ? OSQP_INFTY : 0.0;
+  }
+
+  return slope * dist;
+}
+
+OSQPFloat OSQPVectorf_penalty_reccone_rate(const OSQPVectorf* w,
+                                           const OSQPVectorf* l,
+                                           const OSQPVectorf* u,
+                                           const OSQPVectorf* alpha1,
+                                           const OSQPVectorf* alpha2,
+                                           const OSQPVectorf* delta,
+                                           const OSQPVectori* type,
+                                           OSQPInt            default_type,
+                                           OSQPFloat          infval,
+                                           OSQPFloat          tol,
+                                           OSQPVectorf*       scratch) {
+
+  OSQPInt    i;
+  OSQPFloat  rate   = 0.0;
+  OSQPInt    length = w->length;
+  OSQPFloat* wv     = w->values;
+  OSQPFloat* lv     = l->values;
+  OSQPFloat* uv     = u->values;
+  OSQPFloat* a1     = alpha1->values;
+  OSQPFloat* a2     = alpha2->values;
+  OSQPFloat* d      = delta->values;
+  OSQPInt*   tv     = type ? type->values : OSQP_NULL;
+
+  (void)scratch; /* Only device backends need reduction storage. */
+
+  for (i = 0; i < length; i++) {
+    OSQPFloat row_rate = penalty_reccone_rate_row(wv[i], lv[i], uv[i],
+                                                  tv ? tv[i] : default_type,
+                                                  a1[i], a2[i], d[i], infval, tol);
+
+    if (row_rate >= OSQP_INFTY) return OSQP_INFTY;
+    rate += row_rate;
+  }
+
+  return rate;
+}
+
 OSQPFloat OSQPVectorf_penalty_conj_value(const OSQPVectorf* y,
                                          const OSQPVectorf* alpha1,
                                          const OSQPVectorf* alpha2,
@@ -286,45 +362,4 @@ OSQPInt OSQPVectorf_penalty_params_check(const OSQPVectorf* alpha1,
 
   return flags;
 }
-void OSQPVectorf_penalty_flags(const OSQPVectorf* alpha1,
-                               const OSQPVectorf* alpha2,
-                               const OSQPVectori* type,
-                               OSQPInt            default_type,
-                               OSQPInt*           any_soft,
-                               OSQPInt*           any_linear_growth,
-                               OSQPVectori*       scratch) {
-
-  OSQPInt    i;
-  OSQPInt    length = alpha2->length;
-  OSQPFloat* a1     = alpha1->values;
-  OSQPFloat* a2     = alpha2->values;
-  OSQPInt*   tv     = type ? type->values : OSQP_NULL;
-
-  (void)scratch; /* Only device backends need reduction storage. */
-
-  *any_soft          = 0;
-  *any_linear_growth = 0;
-
-  /* NB: growth follows from alpha2, not the type: an L1L2 row with alpha2 == 0
-   * is a pure L1 penalty and grows linearly, alpha2 > 0 makes it superlinear.
-   * Scaling factors are positive, so the test works on scaled values too. */
-  for (i = 0; i < length; i++) {
-    switch (tv ? tv[i] : default_type) {
-      case OSQP_PENALTY_L1L2:
-        *any_soft = 1;
-        /* alpha1 == alpha2 == 0 is the zero penalty, which does not grow */
-        if ((a2[i] <= 0.0) && (a1[i] > 0.0)) *any_linear_growth = 1;
-        break;
-
-      case OSQP_PENALTY_HUBER:
-        *any_soft          = 1;
-        *any_linear_growth = 1;
-        break;
-
-      default:
-        break;
-    }
-  }
-}
-
 #endif /* OSQP_EMBEDDED_MODE != 1 */

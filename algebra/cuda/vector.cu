@@ -282,24 +282,6 @@ OSQPInt OSQPVectorf_penalty_params_check(const OSQPVectorf* alpha1,
   return res;
 }
 
-void OSQPVectorf_penalty_flags(const OSQPVectorf* alpha1,
-                               const OSQPVectorf* alpha2,
-                               const OSQPVectori* type,
-                               OSQPInt            default_type,
-                               OSQPInt*           any_soft,
-                               OSQPInt*           any_linear_growth,
-                               OSQPVectori*       scratch) {
-
-  OSQPInt res;
-
-  cuda_vec_penalty_flags(alpha1->d_val, alpha2->d_val,
-                         type ? type->d_val : (const OSQPInt*)OSQP_NULL,
-                         default_type, alpha2->length, &res, scratch->d_val);
-
-  *any_soft          = (res & 0x1) ? 1 : 0;
-  *any_linear_growth = (res & 0x2) ? 1 : 0;
-}
-
 void OSQPVectorf_round_to_zero(OSQPVectorf* a,
                                OSQPFloat    tol) {
   cuda_vec_round(a->d_val, tol, a->length);
@@ -474,6 +456,27 @@ OSQPFloat OSQPVectorf_penalty_value(const OSQPVectorf* z,
                          type ? type->d_val : (const OSQPInt*)OSQP_NULL,
                          default_type, z->length, &res, scratch->d_val);
 
+  return res;
+}
+
+OSQPFloat OSQPVectorf_penalty_reccone_rate(const OSQPVectorf* w,
+                                           const OSQPVectorf* l,
+                                           const OSQPVectorf* u,
+                                           const OSQPVectorf* alpha1,
+                                           const OSQPVectorf* alpha2,
+                                           const OSQPVectorf* delta,
+                                           const OSQPVectori* type,
+                                           OSQPInt            default_type,
+                                           OSQPFloat          infval,
+                                           OSQPFloat          tol,
+                                           OSQPVectorf*       scratch) {
+  OSQPFloat res;
+
+  cuda_vec_penalty_reccone_rate(w->d_val, l->d_val, u->d_val,
+                                alpha1->d_val, alpha2->d_val, delta->d_val,
+                                type ? type->d_val : (const OSQPInt*)OSQP_NULL,
+                                default_type, infval, tol, w->length,
+                                &res, scratch->d_val);
   return res;
 }
 

@@ -482,7 +482,7 @@ TEST_CASE("Vector: Penalty value and conjugate", "[vector],[operation],[penalty]
   SECTION("The alpha2 == 0 conjugate is an indicator, not a division")
   {
     // The general elastic net formula divides by alpha2, so pure L1 is a limit
-    // rather than a substitution and needs its own branch (PROPOSAL.md 2.7)
+    // rather than a substitution and needs its own branch.
     OSQPVectorf_set_scalar(a1.get(), 4.0);
     OSQPVectorf_set_scalar(a2.get(), 0.0);
     OSQPVectorf_set_scalar(d.get(),  1.0);
@@ -581,4 +581,52 @@ TEST_CASE("Vector: Penalty value and conjugate", "[vector],[operation],[penalty]
     REQUIRE(OSQPVectorf_penalty_conj_value(s.get(), a1.get(), a2.get(), d.get(),
         type.get(), OSQP_PENALTY_NONE, scratch.get()) == OSQP_INFTY);
   }
+}
+
+TEST_CASE("Vector: Penalty recession rate", "[vector],[operation],[penalty]")
+{
+  const OSQPInt n = 4;
+
+  OSQPFloat w_val[4]  = {2.0, -3.0, 0.5, 0.1};
+  OSQPFloat l_val[4]  = {-OSQP_INFTY, 0.0, 0.0, -OSQP_INFTY};
+  OSQPFloat u_val[4]  = {0.0, OSQP_INFTY, OSQP_INFTY, 0.0};
+  OSQPFloat a1_val[4] = {2.0, 3.0, 0.0, 2.0};
+  OSQPFloat a2_val[4] = {0.0, 0.0, 0.0, 0.0};
+  OSQPFloat d_val[4]  = {1.0, 0.5, 1.0, 1.0};
+  OSQPInt type_val[4] = {OSQP_PENALTY_L1L2, OSQP_PENALTY_HUBER,
+                         OSQP_PENALTY_L1L2, OSQP_PENALTY_L1L2};
+
+  OSQPVectorf_ptr w{OSQPVectorf_new(w_val, n)};
+  OSQPVectorf_ptr l{OSQPVectorf_new(l_val, n)};
+  OSQPVectorf_ptr u{OSQPVectorf_new(u_val, n)};
+  OSQPVectorf_ptr a1{OSQPVectorf_new(a1_val, n)};
+  OSQPVectorf_ptr a2{OSQPVectorf_new(a2_val, n)};
+  OSQPVectorf_ptr d{OSQPVectorf_new(d_val, n)};
+  OSQPVectori_ptr type{OSQPVectori_new(type_val, n)};
+  OSQPVectorf_ptr scratch{OSQPVectorf_malloc(1)};
+
+  /* L1: 2*2, Huber: (3*0.5)*3, zero penalty: 0, small L1: 2*0.1.
+     The last contribution remains exact even though it is below tol. */
+  REQUIRE(OSQPVectorf_penalty_reccone_rate(w.get(), l.get(), u.get(),
+      a1.get(), a2.get(), d.get(), type.get(), OSQP_PENALTY_NONE,
+      OSQP_INFTY, 0.2, scratch.get()) == Approx(8.7).margin(TESTS_TOL));
+
+  /* Making the final row quadratic turns it into a blocker. The certificate
+     tolerance applies to membership of its recession cone. */
+  a2_val[3] = 1.0;
+  OSQPVectorf_from_raw(a2.get(), a2_val);
+  REQUIRE(OSQPVectorf_penalty_reccone_rate(w.get(), l.get(), u.get(),
+      a1.get(), a2.get(), d.get(), type.get(), OSQP_PENALTY_NONE,
+      OSQP_INFTY, 0.2, scratch.get()) == Approx(8.5).margin(TESTS_TOL));
+  REQUIRE(OSQPVectorf_penalty_reccone_rate(w.get(), l.get(), u.get(),
+      a1.get(), a2.get(), d.get(), type.get(), OSQP_PENALTY_NONE,
+      OSQP_INFTY, 0.05, scratch.get()) >= OSQP_INFTY);
+
+  a2_val[3] = 0.0;
+  type_val[3] = OSQP_PENALTY_NONE;
+  OSQPVectorf_from_raw(a2.get(), a2_val);
+  OSQPVectori_from_raw(type.get(), type_val);
+  REQUIRE(OSQPVectorf_penalty_reccone_rate(w.get(), l.get(), u.get(),
+      a1.get(), a2.get(), d.get(), type.get(), OSQP_PENALTY_NONE,
+      OSQP_INFTY, 0.05, scratch.get()) >= OSQP_INFTY);
 }

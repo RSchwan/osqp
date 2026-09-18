@@ -352,8 +352,6 @@ TEST_CASE("Penalty: dual infeasibility and penalty growth", "[penalty],[solve]")
     REQUIRE(setup_penalty(solver.get(), 3, OSQP_PENALTY_NONE, type) == 0);
     REQUIRE(osqp_update_penalty_params(solver.get(), a1, a2, dl) == 0);
 
-    REQUIRE(solver->work->penalty_any_linear_growth == 0);
-
     osqp_solve(solver.get());
 
     mu_assert("A superlinear soft row suppressed a valid declaration",
@@ -361,49 +359,59 @@ TEST_CASE("Penalty: dual infeasibility and penalty growth", "[penalty],[solve]")
                solver->info->status_val == OSQP_DUAL_INFEASIBLE_INACCURATE));
   }
 
-  SECTION("A zero penalty does not count as linear growth")
-  {
+}
+
+TEST_CASE("Penalty: the dual-infeasibility rate is exact", "[penalty],[solve]")
+{
+  /* min -x  s.t.  x <= 1 softened. Along dx = +1 the objective falls at rate 1
+     and the penalty charges its asymptotic slope, so the problem is unbounded
+     exactly while that slope is below 1.
+     The backend-level test pins the numerical rate; these cases verify that
+     the solver uses it when deciding whether to issue a certificate. */
+  OwnedCsc_ptr P = to_csc(1, 1, {0.0});
+  OwnedCsc_ptr A = to_csc(1, 1, {1.0});
+
+  OSQPFloat q[1] = {-1.0};
+  OSQPFloat l[1] = {-OSQP_INFTY};
+  OSQPFloat u[1] = {1.0};
+
+  auto unbounded = [&](OSQPInt type_val, OSQPFloat a1v, OSQPFloat dv) {
+    OSQPSettings_ptr settings{OSQPSettings_new()};
+    settings->verbose  = 0;
+    settings->max_iter = 5000;
+
     OSQPSolver* tmp = nullptr;
-    mu_assert("setup error",
-              osqp_setup(&tmp, P.get(), q, A.get(), l, u, 1, 1, settings.get()) == 0);
+    REQUIRE(osqp_setup(&tmp, P.get(), q, A.get(), l, u, 1, 1, settings.get()) == 0);
     OSQPSolver_ptr solver{tmp};
 
-    // alpha1 == alpha2 == 0 is phi = 0, which does not grow at all, so it must
-    // not be lumped in with the linear-growth rows
-    OSQPInt   type[1] = {OSQP_PENALTY_L1L2};
-    OSQPFloat zero[1] = {0.0};
-    OSQPFloat one[1]  = {1.0};
+    OSQPInt   type[1] = {type_val};
+    OSQPFloat a1[1]   = {a1v};
+    OSQPFloat a2[1]   = {0.0};
+    OSQPFloat dl[1]   = {dv};
 
     REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_NONE, type,
-                               zero, zero, one) == 0);
-
-    mu_assert("A zero penalty was flagged as linear growth",
-              solver->work->penalty_any_linear_growth == 0);
-  }
-
-  SECTION("A linear-growth soft row suppresses the declaration")
-  {
-    OSQPSolver* tmp = nullptr;
-    mu_assert("setup error",
-              osqp_setup(&tmp, P.get(), q, A.get(), l, u, 1, 1, settings.get()) == 0);
-    OSQPSolver_ptr solver{tmp};
-
-    // Pure L1: the penalty grows linearly, so the exact test needs a term that
-    // does not exist yet (PROPOSAL.md 2.7) and the declaration is suppressed
-    OSQPInt   type[1] = {OSQP_PENALTY_L1L2};
-    OSQPFloat a1[1]   = {1.0};
-    OSQPFloat a2[1]   = {0.0};
-    OSQPFloat dl[1]   = {1.0};
-
-    REQUIRE(setup_penalty(solver.get(), 3, OSQP_PENALTY_NONE, type) == 0);
-    REQUIRE(osqp_update_penalty_params(solver.get(), a1, a2, dl) == 0);
-
-    REQUIRE(solver->work->penalty_any_linear_growth == 1);
-
+                               a1, a2, dl) == 0);
     osqp_solve(solver.get());
 
-    mu_assert("A linear-growth row did not suppress the dual-infeasibility claim",
-              (solver->info->status_val != OSQP_DUAL_INFEASIBLE &&
-               solver->info->status_val != OSQP_DUAL_INFEASIBLE_INACCURATE));
+    return (OSQPInt)(solver->info->status_val == OSQP_DUAL_INFEASIBLE ||
+                     solver->info->status_val == OSQP_DUAL_INFEASIBLE_INACCURATE);
+  };
+
+  SECTION("L1: the slope is alpha1")
+  {
+    mu_assert("a slope just under the rate did not give dual infeasible",
+              unbounded(OSQP_PENALTY_L1L2, 0.9, 1.0) == 1);
+    mu_assert("a slope above the rate still gave dual infeasible",
+              unbounded(OSQP_PENALTY_L1L2, 2.0, 1.0) == 0);
+  }
+
+  SECTION("Huber: the slope is alpha1*delta, not alpha1")
+  {
+    // alpha1 is 1 in both, so a rate using alpha1 alone would sit exactly on
+    // the boundary for each and could not separate them
+    mu_assert("a slope just under the rate did not give dual infeasible",
+              unbounded(OSQP_PENALTY_HUBER, 1.0, 0.9) == 1);
+    mu_assert("a slope above the rate still gave dual infeasible",
+              unbounded(OSQP_PENALTY_HUBER, 1.0, 2.0) == 0);
   }
 }

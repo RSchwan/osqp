@@ -295,6 +295,32 @@ OSQPFloat OSQPVectorf_penalty_value(const OSQPVectorf* z,
                                     OSQPInt            default_type,
                                     OSQPVectorf*       scratch);
 
+/* Rate at which the penalty grows along the direction w, that is
+   sum_i slope_i * dist(w_i, rec[l_i,u_i]) over the rows whose penalty grows
+   exactly linearly:
+
+     L1L2 with alpha2 == 0 : slope = alpha1
+     HUBER                 : slope = alpha1*delta, the asymptotic slope
+
+   Such a row does not forbid a recession direction, it charges for it, so the
+   dual-infeasibility test needs this term on top of q'dx. Returns OSQP_INFTY
+   when a hard or superlinear row leaves its recession cone by more than tol.
+   Linear rows always charge their exact distance. Values of +/- infval or
+   larger are treated as infinite. scratch is a preallocated one-element float
+   vector for backend reductions.
+ */
+OSQPFloat OSQPVectorf_penalty_reccone_rate(const OSQPVectorf* w,
+                                           const OSQPVectorf* l,
+                                           const OSQPVectorf* u,
+                                           const OSQPVectorf* alpha1,
+                                           const OSQPVectorf* alpha2,
+                                           const OSQPVectorf* delta,
+                                           const OSQPVectori* type,
+                                           OSQPInt            default_type,
+                                           OSQPFloat          infval,
+                                           OSQPFloat          tol,
+                                           OSQPVectorf*       scratch);
+
 /* Conjugate sum_i phi*_i(y_i), needed by the duality gap.  Returns OSQP_INFTY
    if any row lies outside dom phi*.
    scratch is a preallocated one-element float vector for backend reductions.
@@ -385,19 +411,6 @@ OSQPInt OSQPVectorf_penalty_params_check(const OSQPVectorf* alpha1,
                                          const OSQPVectori* type,
                                          OSQPInt            default_type,
                                          OSQPVectori*       scratch);
-
-/* Summarize the penalty: any_soft is set if any row is not OSQP_PENALTY_NONE,
-   any_linear_growth if any soft row's penalty grows exactly linearly.
-   scratch is a preallocated one-element integer vector for backend reductions.
- */
-void OSQPVectorf_penalty_flags(const OSQPVectorf* alpha1,
-                               const OSQPVectorf* alpha2,
-                               const OSQPVectori* type,
-                               OSQPInt            default_type,
-                               OSQPInt*           any_soft,
-                               OSQPInt*           any_linear_growth,
-                               OSQPVectori*       scratch);
-
 
 /* Elementwise replacement based on lt comparison.
    x[i] = z[i] < testval ? newval : z[i];

@@ -126,9 +126,6 @@ void penalty_free(OSQPWorkspace* work) {
   OSQPVectorf_free(work->penalty_val_tmp);
   work->penalty_val_tmp = OSQP_NULL;
 
-  work->penalty_any_soft          = 0;
-  work->penalty_any_linear_growth = 0;
-
   if (!work->data) return;
 
   pen = work->data->penalty;
@@ -212,16 +209,6 @@ static void penalty_report_errors(OSQPInt flags) {
   }
 }
 
-static void penalty_update_flags(OSQPWorkspace* work) {
-
-  OSQPPenaltyData* pen = work->data->penalty;
-
-  OSQPVectorf_penalty_flags(pen->alpha1, pen->alpha2,
-                            penalty_types(pen), pen->default_penalty_type,
-                            &work->penalty_any_soft,
-                            &work->penalty_any_linear_growth, work->penalty_flags_tmp);
-}
-
 /* Validate a default type and an optional per-row type array */
 static OSQPInt penalty_validate_types(OSQPInt        default_type,
                                       const OSQPInt* type,
@@ -276,8 +263,6 @@ static OSQPInt penalty_check_params(OSQPWorkspace*     work,
 
 /* Refresh state derived from the type layout. */
 static OSQPInt penalty_finish_types(OSQPSolver* solver) {
-
-  penalty_update_flags(solver->work);
 
   /* The rho classification depends on which rows are soft, and osqp_update_rho
    * reuses the cached constr_type, so it has to be recomputed here */
@@ -466,7 +451,6 @@ OSQPInt osqp_update_penalty_params(OSQPSolver*      solver,
   OSQPVectorf_copy(pen->alpha2, alpha2);
   OSQPVectorf_copy(pen->delta,  delta);
 
-  penalty_update_flags(work);
   return 0;
 }
 

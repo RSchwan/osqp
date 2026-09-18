@@ -152,18 +152,6 @@ void cuda_vec_penalty_check(const OSQPFloat* d_a1,
                             OSQPInt*         d_res);
 
 /**
- * Summarize the penalty: bit 0 set if any row is soft, bit 1 if any soft row
- * grows only linearly.
- */
-void cuda_vec_penalty_flags(const OSQPFloat* d_a1,
-                            const OSQPFloat* d_a2,
-                            const OSQPInt*   d_type,
-                            OSQPInt          default_type,
-                            OSQPInt          n,
-                            OSQPInt*         h_res,
-                            OSQPInt*         d_res);
-
-/**
  * Elementwise generalized projection d_z = vbar + prox_{phi/rho}(d_v - vbar),
  * where vbar = min(max(d_v, d_l), d_u).  d_rho_vec may be NULL, in which case
  * the scalar rho applies to every row.  d_type may be NULL to use
@@ -197,6 +185,24 @@ void cuda_vec_penalty_value(const OSQPFloat* d_z,
                                   OSQPInt    n,
                                   OSQPFloat* h_res,
                                   OSQPFloat* d_res);
+
+/**
+ * Objective recession rate along d_w. Returns OSQP_INFTY when a hard or
+ * superlinear row leaves its bound recession cone by more than tol.
+ */
+void cuda_vec_penalty_reccone_rate(const OSQPFloat* d_w,
+                                   const OSQPFloat* d_l,
+                                   const OSQPFloat* d_u,
+                                   const OSQPFloat* d_a1,
+                                   const OSQPFloat* d_a2,
+                                   const OSQPFloat* d_d,
+                                   const OSQPInt*   d_type,
+                                   OSQPInt          default_type,
+                                   OSQPFloat        infval,
+                                   OSQPFloat        tol,
+                                   OSQPInt          n,
+                                   OSQPFloat*       h_res,
+                                   OSQPFloat*       d_res);
 
 /**
  * Conjugate sum_i phi*_i(y_i).  Returns OSQP_INFTY if any row lies outside

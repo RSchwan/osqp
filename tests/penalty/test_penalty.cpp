@@ -230,8 +230,6 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: rejected updates change nothing
   const auto a1 = to_vector(penalty()->alpha1, data->m);
   const auto a2 = to_vector(penalty()->alpha2, data->m);
   const auto delta = to_vector(penalty()->delta, data->m);
-  const auto soft = solver->work->penalty_any_soft;
-  const auto linear = solver->work->penalty_any_linear_growth;
 
   SECTION("Parameter update with one invalid row") {
     OSQPFloat changed[4] = {6.0, 7.0, 8.0, 9.0};
@@ -252,8 +250,6 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: rejected updates change nothing
   OSQPInt stored[4];
   OSQPVectori_to_raw(stored, penalty()->type);
   for (OSQPInt i = 0; i < data->m; ++i) REQUIRE(stored[i] == types[i]);
-  REQUIRE(solver->work->penalty_any_soft == soft);
-  REQUIRE(solver->work->penalty_any_linear_growth == linear);
 }
 
 TEST_CASE_METHOD(penalty_test_fixture, "Penalty: NULL arguments leave parameters alone", "[penalty]")
@@ -304,8 +300,6 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: uniform and per-row agree", "[p
 
   std::vector<OSQPFloat> uniform_a1 = to_vector(penalty()->alpha1, data->m);
   std::vector<OSQPFloat> uniform_a2 = to_vector(penalty()->alpha2, data->m);
-  OSQPInt uniform_soft   = solver->work->penalty_any_soft;
-  OSQPInt uniform_linear = solver->work->penalty_any_linear_growth;
 
   /* Restate the same types per-row. No type changes, so the parameters must
    * survive; this also pins that the old types are read before the per-row
@@ -323,11 +317,6 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: uniform and per-row agree", "[p
     mu_assert("Penalty: alpha2 differs between dispatch paths, or was reset",
               uniform_a2[i] == perrow_a2[i]);
   }
-
-  mu_assert("Penalty: any_soft differs between dispatch paths",
-            uniform_soft == solver->work->penalty_any_soft);
-  mu_assert("Penalty: any_linear_growth differs between dispatch paths",
-            uniform_linear == solver->work->penalty_any_linear_growth);
 
   // Going back to uniform must restore the fast path
   REQUIRE(osqp_update_penalty_types(solver.get(), OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
@@ -370,71 +359,6 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: a type change keeps the weights
   REQUIRE(a1[2] == alpha1[2]);
   REQUIRE(a2[2] == alpha2[2]);
   REQUIRE(d[2] == alpha1[2]);
-}
-
-TEST_CASE_METHOD(penalty_test_fixture, "Penalty: summary flags", "[penalty]")
-{
-  setup_solver();
-
-  OSQPFloat alpha1[4] = {1.0, 1.0, 1.0, 1.0};
-  OSQPFloat alpha2[4] = {1.0, 1.0, 1.0, 1.0};
-  OSQPFloat delta[4]  = {1.0, 1.0, 1.0, 1.0};
-
-  SECTION("Elastic net is soft and superlinear") {
-    REQUIRE(setup_penalty(OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
-    REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, alpha2, OSQP_NULL) == 0);
-
-    mu_assert("Penalty: any_soft not set", solver->work->penalty_any_soft == 1);
-    mu_assert("Penalty: elastic net reported as linear growth",
-              solver->work->penalty_any_linear_growth == 0);
-  }
-
-  SECTION("Pure L1 grows linearly") {
-    for (int i = 0; i < 4; i++) alpha2[i] = 0.0;
-
-    REQUIRE(setup_penalty(OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
-    REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, alpha2, OSQP_NULL) == 0);
-
-    mu_assert("Penalty: any_soft not set", solver->work->penalty_any_soft == 1);
-    mu_assert("Penalty: pure L1 not reported as linear growth",
-              solver->work->penalty_any_linear_growth == 1);
-  }
-
-  SECTION("A single pure-L1 row is enough") {
-    alpha2[2] = 0.0;
-
-    REQUIRE(setup_penalty(OSQP_PENALTY_L1L2, OSQP_NULL) == 0);
-    REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, alpha2, OSQP_NULL) == 0);
-
-    mu_assert("Penalty: a single linear-growth row was missed",
-              solver->work->penalty_any_linear_growth == 1);
-  }
-
-  SECTION("Huber grows linearly") {
-    REQUIRE(setup_penalty(OSQP_PENALTY_HUBER, OSQP_NULL) == 0);
-    REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, OSQP_NULL, delta) == 0);
-
-    mu_assert("Penalty: any_soft not set", solver->work->penalty_any_soft == 1);
-    mu_assert("Penalty: Huber not reported as linear growth",
-              solver->work->penalty_any_linear_growth == 1);
-  }
-
-  SECTION("Hard rows do not count as soft") {
-    OSQPInt types[4] = {OSQP_PENALTY_NONE, OSQP_PENALTY_NONE,
-                        OSQP_PENALTY_L1L2, OSQP_PENALTY_NONE};
-
-    REQUIRE(setup_penalty(OSQP_PENALTY_NONE, types) == 0);
-    REQUIRE(osqp_update_penalty_params(solver.get(), alpha1, alpha2, OSQP_NULL) == 0);
-
-    mu_assert("Penalty: any_soft not set for a partially soft problem",
-              solver->work->penalty_any_soft == 1);
-    mu_assert("Penalty: a superlinear soft row reported as linear",
-              solver->work->penalty_any_linear_growth == 0);
-
-    // Softening nothing clears the flag again
-    REQUIRE(osqp_update_penalty_types(solver.get(), OSQP_PENALTY_NONE, OSQP_NULL) == 0);
-    mu_assert("Penalty: any_soft not cleared", solver->work->penalty_any_soft == 0);
-  }
 }
 
 TEST_CASE_METHOD(penalty_test_fixture, "Penalty: parameter scaling", "[penalty]")

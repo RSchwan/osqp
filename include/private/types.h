@@ -133,19 +133,9 @@ struct OSQPWorkspace_ {
 
   /** @} */
 
-  /**
-   * @name Penalty summary flags
-   *
-   * Derived from OSQPData::penalty when the penalty is set.
-   * @{
-   */
   OSQPVectori* penalty_type_tmp;     ///< staging for candidate per-row types, size m
   OSQPVectori* penalty_flags_tmp;    ///< one-element integer scratch for backend reductions
   OSQPVectorf* penalty_val_tmp;      ///< one-element float scratch for backend reductions
-  OSQPInt penalty_any_soft;          ///< boolean; any row not OSQP_PENALTY_NONE
-  OSQPInt penalty_any_linear_growth; ///< boolean; any soft row growing only linearly
-
-  /** @} */
 
 # if OSQP_EMBEDDED_MODE != 1
   OSQPVectori* constr_type; ///< Type of constraints: loose (-1), equality (1), inequality (0)

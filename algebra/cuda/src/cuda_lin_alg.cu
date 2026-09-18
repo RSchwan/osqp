@@ -148,34 +148,6 @@ __global__ void vec_penalty_check_kernel(const OSQPFloat* a1,
   }
 }
 
-__global__ void vec_penalty_flags_kernel(const OSQPFloat* a1,
-                                         const OSQPFloat* a2,
-                                         const OSQPInt*   type,
-                                         OSQPInt          default_type,
-                                         OSQPInt*         res,
-                                         OSQPInt          n) {
-
-  OSQPInt idx = threadIdx.x + blockDim.x * blockIdx.x;
-  OSQPInt grid_size = blockDim.x * gridDim.x;
-
-  for(OSQPInt i = idx; i < n; i += grid_size) {
-    switch (type ? type[i] : default_type) {
-      case OSQP_PENALTY_L1L2:
-        atomicOr(res, 0x1);
-        /* alpha1 == alpha2 == 0 is the zero penalty, which does not grow */
-        if ((a2[i] <= 0.0) && (a1[i] > 0.0)) atomicOr(res, 0x2);
-        break;
-
-      case OSQP_PENALTY_HUBER:
-        atomicOr(res, 0x3);
-        break;
-
-      default:
-        break;
-    }
-  }
-}
-
 /* prox_{phi/rho}(r) for a single row */
 __device__ static OSQPFloat prox_penalty_row(OSQPFloat r,
                                              OSQPFloat rho,
@@ -261,6 +233,33 @@ __device__ static OSQPFloat penalty_conj_row(OSQPFloat y,
   }
 }
 
+__device__ static OSQPFloat penalty_reccone_rate_row(OSQPFloat w,
+                                                      OSQPFloat l,
+                                                      OSQPFloat u,
+                                                      OSQPInt   type,
+                                                      OSQPFloat a1,
+                                                      OSQPFloat a2,
+                                                      OSQPFloat d,
+                                                      OSQPFloat infval,
+                                                      OSQPFloat tol) {
+  OSQPFloat dist;
+
+  if ((u < +infval) && (w > 0.0))      dist = w;
+  else if ((l > -infval) && (w < 0.0)) dist = -w;
+  else                                 return 0.0;
+
+  switch (type) {
+    case OSQP_PENALTY_L1L2:
+      return a2 > 0.0 ? (dist > tol ? OSQP_INFTY : 0.0) : a1 * dist;
+
+    case OSQP_PENALTY_HUBER:
+      return (a1 * d) * dist;
+
+    default:
+      return dist > tol ? OSQP_INFTY : 0.0;
+  }
+}
+
 /* TYPE < 0 reads the per-row type vector, otherwise every row is TYPE and the
    switches above fold away at compile time */
 template<OSQPInt TYPE>
@@ -330,6 +329,30 @@ __global__ void vec_penalty_conj_value_kernel(const OSQPFloat* y,
   for(OSQPInt i = idx; i < n; i += grid_size) {
     res_kernel += penalty_conj_row(y[i], TYPE < 0 ? type[i] : TYPE,
                                    a1[i], a2[i], d[i]);
+  }
+  atomicAdd(res, res_kernel);
+}
+
+template<OSQPInt TYPE>
+__global__ void vec_penalty_reccone_rate_kernel(const OSQPFloat* w,
+                                                const OSQPFloat* l,
+                                                const OSQPFloat* u,
+                                                const OSQPFloat* a1,
+                                                const OSQPFloat* a2,
+                                                const OSQPFloat* d,
+                                                const OSQPInt*   type,
+                                                OSQPFloat        infval,
+                                                OSQPFloat        tol,
+                                                OSQPFloat*       res,
+                                                OSQPInt          n) {
+  OSQPInt idx = threadIdx.x + blockDim.x * blockIdx.x;
+  OSQPInt grid_size = blockDim.x * gridDim.x;
+  OSQPFloat res_kernel = 0.0;
+
+  for(OSQPInt i = idx; i < n; i += grid_size) {
+    res_kernel += penalty_reccone_rate_row(w[i], l[i], u[i],
+                                           TYPE < 0 ? type[i] : TYPE,
+                                           a1[i], a2[i], d[i], infval, tol);
   }
   atomicAdd(res, res_kernel);
 }
@@ -907,24 +930,6 @@ void cuda_vec_penalty_check(const OSQPFloat* d_a1,
   checkCudaErrors(cudaMemcpy(h_res, d_res, sizeof(OSQPInt), cudaMemcpyDeviceToHost));
 }
 
-void cuda_vec_penalty_flags(const OSQPFloat* d_a1,
-                            const OSQPFloat* d_a2,
-                            const OSQPInt*   d_type,
-                            OSQPInt          default_type,
-                            OSQPInt          n,
-                            OSQPInt*         h_res,
-                            OSQPInt*         d_res) {
-
-  OSQPInt number_of_blocks = (n / THREADS_PER_BLOCK) + 1;
-
-  *h_res = 0;
-  checkCudaErrors(cudaMemcpy(d_res, h_res, sizeof(OSQPInt), cudaMemcpyHostToDevice));
-
-  vec_penalty_flags_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_a1, d_a2, d_type, default_type, d_res, n);
-
-  checkCudaErrors(cudaMemcpy(h_res, d_res, sizeof(OSQPInt), cudaMemcpyDeviceToHost));
-}
-
 /* Launch KERNEL specialized on the uniform type when d_type is NULL, so that a
    uniform problem runs a branch-free kernel, otherwise the per-row variant */
 #define CUDA_PENALTY_DISPATCH(KERNEL, ...)                                     \
@@ -996,6 +1001,31 @@ void cuda_vec_penalty_value(const OSQPFloat* d_z,
                         d_a1, d_a2, d_d, d_type, d_res, n);
 
   checkCudaErrors(cudaMemcpy(h_res, d_res, sizeof(OSQPFloat), cudaMemcpyDeviceToHost));
+}
+
+void cuda_vec_penalty_reccone_rate(const OSQPFloat* d_w,
+                                   const OSQPFloat* d_l,
+                                   const OSQPFloat* d_u,
+                                   const OSQPFloat* d_a1,
+                                   const OSQPFloat* d_a2,
+                                   const OSQPFloat* d_d,
+                                   const OSQPInt*   d_type,
+                                   OSQPInt          default_type,
+                                   OSQPFloat        infval,
+                                   OSQPFloat        tol,
+                                   OSQPInt          n,
+                                   OSQPFloat*       h_res,
+                                   OSQPFloat*       d_res) {
+  OSQPInt number_of_blocks = (n / THREADS_PER_BLOCK) + 1;
+
+  *h_res = 0.0;
+  checkCudaErrors(cudaMemcpy(d_res, h_res, sizeof(OSQPFloat), cudaMemcpyHostToDevice));
+
+  CUDA_PENALTY_DISPATCH(vec_penalty_reccone_rate_kernel, d_w, d_l, d_u,
+                        d_a1, d_a2, d_d, d_type, infval, tol, d_res, n);
+
+  checkCudaErrors(cudaMemcpy(h_res, d_res, sizeof(OSQPFloat), cudaMemcpyDeviceToHost));
+  if (*h_res >= OSQP_INFTY) *h_res = OSQP_INFTY;
 }
 
 void cuda_vec_penalty_conj_value(const OSQPFloat* d_y,

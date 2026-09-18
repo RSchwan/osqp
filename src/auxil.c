@@ -553,13 +553,9 @@ OSQPInt is_dual_infeasible(OSQPSolver* solver,
 
   OSQPFloat norm_delta_x;
   OSQPFloat cost_scaling;
+  OSQPFloat qtdx;
   OSQPSettings*  settings = solver->settings;
   OSQPWorkspace* work     = solver->work;
-
-  /* A penalty growing only linearly bounds the rate at which the objective can
-     fall along a ray, so the exact test needs an extra term (PROPOSAL.md 2.7).
-     Until that lands, do not declare dual infeasibility at all. */
-  if (work->penalty_any_linear_growth) return 0;
 
   // Compute norm of delta_x
   if (settings->scaling && !settings->scaled_termination) { // Unscale if needed
@@ -581,7 +577,9 @@ OSQPInt is_dual_infeasible(OSQPSolver* solver,
     /* vec_mult_scalar(work->delta_x, 1./norm_delta_x, work->data->n); */
 
     // Check first if q'*delta_x < 0
-    if (OSQPVectorf_dot_prod(work->data->q, work->delta_x) < 0.0) {
+    qtdx = OSQPVectorf_dot_prod(work->data->q, work->delta_x);
+
+    if (qtdx < 0.0) {
       // Compute product P * delta_x
       OSQPMatrix_Axpy(work->data->P, work->delta_x, work->Pdelta_x, 1.0, 0.0);
 
@@ -598,6 +596,27 @@ OSQPInt is_dual_infeasible(OSQPSolver* solver,
         // Compute A * delta_x
         OSQPMatrix_Axpy(work->data->A, work->delta_x, work->Adelta_x,1.0,0.0);
 
+        /* Evaluate the recession rate before unscaling so A*delta_x, q'dx and
+           the penalty parameters use the same units. A blocking row returns
+           OSQP_INFTY; a linear-growth row contributes its finite charge. */
+        if (work->data->penalty) {
+          OSQPPenaltyData* pen = work->data->penalty;
+
+          OSQPFloat rate =
+            OSQPVectorf_penalty_reccone_rate(work->Adelta_x,
+                                             work->data->l, work->data->u,
+                                             pen->alpha1, pen->alpha2, pen->delta,
+                                             penalty_row_types(solver),
+                                             penalty_default_type(solver),
+                                             OSQP_INFTY * OSQP_MIN_SCALING,
+                                             eps_dual_inf * OSQPVectorf_norm_inf(work->delta_x),
+                                             work->penalty_val_tmp);
+
+          if (qtdx + rate >= 0.0) return 0;
+
+          return 1;
+        }
+
         // Scale if necessary
         if (settings->scaling && !settings->scaled_termination) {
           OSQPVectorf_ew_prod(work->Adelta_x, work->Adelta_x, work->scaling->Einv);
@@ -609,16 +628,13 @@ OSQPInt is_dual_infeasible(OSQPSolver* solver,
 
         // If you get this far, then all tests passed, so return results from final test
         // Test whether Adelta_x is in the recession cone of C = [l, u]
-        /* Linear-growth rows are excluded above. A quadratic L1L2 row retains
-           the bound recession cone, while a zero-penalty row is free. */
+        /* No penalty data: every row is hard. */
         return OSQPVectorf_in_reccone(work->Adelta_x,
                                       work->data->l,
                                       work->data->u,
-                                      work->data->penalty
-                                        ? work->data->penalty->alpha2
-                                        : OSQP_NULL,
-                                      penalty_row_types(solver),
-                                      penalty_default_type(solver),
+                                      OSQP_NULL,
+                                      OSQP_NULL,
+                                      OSQP_PENALTY_NONE,
                                       OSQP_INFTY * OSQP_MIN_SCALING,
                                       eps_dual_inf * norm_delta_x);
       }
