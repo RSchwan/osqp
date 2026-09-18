@@ -7,6 +7,18 @@
 extern "C" {
 #endif
 
+/**
+ * Generalized projection z = vbar + prox_{Phi/rho}(v - vbar) of the z-update,
+ * where vbar = Proj_[l,u](v). Reduces to the plain projection when no penalty
+ * is set up. It is acceptable to assign z == v.
+ * @param solver Solver
+ * @param z      Output vector
+ * @param v      Input vector
+ */
+void penalty_project(OSQPSolver*        solver,
+                     OSQPVectorf*       z,
+                     const OSQPVectorf* v);
+
 # if OSQP_EMBEDDED_MODE != 1
 
 /**

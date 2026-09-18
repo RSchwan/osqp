@@ -1,6 +1,7 @@
 #include "osqp.h"
 #include "auxil.h"
 #include "lin_alg.h"
+#include "penalty.h"
 #include "scaling.h"
 #include "util.h"
 #include "printing.h"
@@ -203,8 +204,8 @@ void update_z(OSQPSolver* solver) {
                             work->rho_inv, work->y);
   }
 
-  // project z onto C = [l,u]
-  OSQPVectorf_ew_bound_vec(work->z, work->z, work->data->l, work->data->u);
+  // project z onto C = [l,u], softened by the row penalties
+  penalty_project(solver, work->z, work->z);
 }
 
 void update_y(OSQPSolver* solver) {

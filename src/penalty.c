@@ -9,13 +9,32 @@
 * Soft-constraint penalties                              * *
 ***********************************************************/
 
-#if OSQP_EMBEDDED_MODE != 1
-
 /* The per-row types, or OSQP_NULL when every row uses default_penalty_type.
  * The element-wise kernels take the fast path on OSQP_NULL. */
 static const OSQPVectori* penalty_types(const OSQPPenaltyData* pen) {
   return pen->uniform ? OSQP_NULL : pen->type;
 }
+
+void penalty_project(OSQPSolver*        solver,
+                     OSQPVectorf*       z,
+                     const OSQPVectorf* v) {
+
+  OSQPWorkspace*   work = solver->work;
+  OSQPPenaltyData* pen  = work->data->penalty;
+
+  if (!pen) {
+    OSQPVectorf_ew_bound_vec(z, v, work->data->l, work->data->u);
+    return;
+  }
+
+  OSQPVectorf_ew_prox_penalty(z, v, work->data->l, work->data->u,
+                              solver->settings->rho_is_vec ? work->rho_vec : OSQP_NULL,
+                              solver->settings->rho,
+                              pen->alpha1, pen->alpha2, pen->delta,
+                              penalty_types(pen), pen->default_penalty_type);
+}
+
+#if OSQP_EMBEDDED_MODE != 1
 
 /* Scale or unscale the penalty parameters in place, like l and u */
 static void penalty_apply_scaling(OSQPSolver* solver,
