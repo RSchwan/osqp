@@ -1,11 +1,14 @@
 #include <catch2/catch.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <limits>
 #include <vector>
 
 #include "osqp_api.h"    /* OSQP API wrapper (public + some private) */
 #include "osqp_tester.h" /* Tester helpers */
 #include "test_utils.h"  /* Testing Helper functions */
+#include "penalty.h"     /* Phi*(y), which the duality gap is built on */
 
 namespace {
 
@@ -465,4 +468,65 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: scaled parameters survive a mat
   }
   REQUIRE(a1[2] == Approx(c * alpha1[2] / (E[2] * E[2])).epsilon(TESTS_TOL));
   REQUIRE(d[2] == Approx(delta[2] * E[2]).epsilon(TESTS_TOL));
+}
+
+TEST_CASE_METHOD(penalty_test_fixture, "Penalty: the conjugate admits a boundary dual", "[penalty]")
+{
+  /* The y-update leaves y in dphi(s), so a row whose penalty is linear at its
+     slack lands y exactly on the boundary of dom phi* and overshoots it by
+     roundoff. An exact membership test would call that solution dual
+     infeasible and report an infinite duality gap, stalling the gap
+     termination check; the domain is therefore tested with a tolerance. */
+  settings->scaling = 0;   /* Weights stay in the caller's units */
+  setup_solver();
+
+  std::vector<OSQPFloat> a1(data->m), a2(data->m), d(data->m);
+  std::vector<OSQPFloat> y(data->m);
+  OSQPFloat boundary;
+
+  auto conj_at = [&](OSQPFloat val) {
+    for (OSQPInt i = 0; i < data->m; i++) y[i] = (i % 2) ? -val : val;
+
+    OSQPVectorf_ptr vec{OSQPVectorf_new(y.data(), data->m)};
+    return penalty_conj_value(solver.get(), vec.get());
+  };
+
+  SECTION("Pure L1") {
+    /* phi* is the indicator of |y| <= alpha1 */
+    boundary = 1.0;
+    std::fill(a1.begin(), a1.end(), boundary);
+    std::fill(a2.begin(), a2.end(), 0.0);
+    std::fill(d.begin(), d.end(), 1.0);
+
+    REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_L1L2, OSQP_NULL,
+                               a1.data(), a2.data(), d.data()) == 0);
+
+    REQUIRE(conj_at(boundary) == Approx(0.0).margin(TESTS_TOL));
+    REQUIRE(conj_at(std::nextafter(boundary, (OSQPFloat)2.0)) == Approx(0.0).margin(TESTS_TOL));
+
+    mu_assert("The conjugate accepts a dual well outside its domain",
+              conj_at(1.5 * boundary) >= OSQP_INFTY);
+  }
+
+  SECTION("Huber") {
+    /* phi* is finite on |y| <= alpha1*delta, where it takes alpha1*delta^2/2 */
+    const OSQPFloat alpha1 = 2.0, delta = 0.5;
+
+    boundary = alpha1 * delta;
+    std::fill(a1.begin(), a1.end(), alpha1);
+    std::fill(a2.begin(), a2.end(), 0.0);
+    std::fill(d.begin(), d.end(), delta);
+
+    REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_HUBER, OSQP_NULL,
+                               a1.data(), a2.data(), d.data()) == 0);
+
+    const OSQPFloat val = data->m * 0.5 * alpha1 * delta * delta;
+
+    REQUIRE(conj_at(boundary) == Approx(val).epsilon(TESTS_TOL));
+    /* Past the boundary the value is the boundary's, never more */
+    REQUIRE(conj_at(std::nextafter(boundary, (OSQPFloat)2.0)) == Approx(val).epsilon(TESTS_TOL));
+
+    mu_assert("The conjugate accepts a dual well outside its domain",
+              conj_at(1.5 * boundary) >= OSQP_INFTY);
+  }
 }

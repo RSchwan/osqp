@@ -210,6 +210,16 @@ __device__ static OSQPFloat penalty_value_row(OSQPFloat s,
   }
 }
 
+/* Membership in a conjugate domain |y| <= lim, up to the roundoff tolerance.
+   The dual iterate satisfies y in dphi(s) by construction, so it sits exactly
+   on the boundary whenever the penalty is linear there; testing lim exactly
+   would call the solution dual infeasible and report an infinite gap. */
+__device__ static OSQPInt penalty_conj_in_domain(OSQPFloat ay,
+                                                 OSQPFloat lim) {
+
+  return ay <= lim + OSQP_PENALTY_CONJ_TOL * (1.0 + lim);
+}
+
 /* phi*(y) for a single row, OSQP_INFTY outside the domain */
 __device__ static OSQPFloat penalty_conj_row(OSQPFloat y,
                                              OSQPInt   type,
@@ -219,24 +229,20 @@ __device__ static OSQPFloat penalty_conj_row(OSQPFloat y,
 
   OSQPFloat ay = c_absval(y);
   OSQPFloat t;
-#ifdef OSQP_USE_FLOAT
-  const OSQPFloat eps = FLT_EPSILON;
-#else
-  const OSQPFloat eps = DBL_EPSILON;
-#endif
 
   switch (type) {
     case OSQP_PENALTY_L1L2:
       /* Pure L1 has an indicator conjugate; an infinite quadratic weight
          has a zero conjugate. Handle both before any division or square. */
-      if (a2 <= 0.0)
-        return ay <= a1 + 8.0 * eps * c_absval(a1) ? 0.0 : OSQP_INFTY;
+      if (a2 <= 0.0) return penalty_conj_in_domain(ay, a1) ? 0.0 : OSQP_INFTY;
       t = ay - a1;
       return t <= 0.0 ? 0.0 : (0.5 * t) * (t / a2);
 
     case OSQP_PENALTY_HUBER:
       t = a1 * d;
-      if (ay > t + 8.0 * eps * c_absval(t)) return OSQP_INFTY;
+      if (!penalty_conj_in_domain(ay, t)) return OSQP_INFTY;
+      /* Evaluate at the boundary rather than past it, so the tolerated
+         overshoot cannot report more than the true conjugate value */
       ay = c_min(ay, t);
       return (0.5 * ay) * (ay / a1);
 

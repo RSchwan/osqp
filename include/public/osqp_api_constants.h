@@ -234,4 +234,15 @@ extern const char * OSQP_ERROR_MESSAGE[];
 # define OSQP_ZERO_DEADZONE (1e-15) ///< Minimum permitted value
 #endif
 
+/* Slack on the domain of the soft-constraint penalty conjugate, relative to
+   the domain bound plus an absolute floor. The y-update lands y exactly on the
+   boundary of dom phi* for the penalties whose conjugate is an indicator, so
+   an exact membership test would report an infinite duality gap at the
+   solution, where y overshoots the boundary by a few ulps. */
+#ifdef OSQP_USE_FLOAT
+# define OSQP_PENALTY_CONJ_TOL (1e-05)
+#else
+# define OSQP_PENALTY_CONJ_TOL (1e-12)
+#endif
+
 #endif /* ifndef OSQP_API_CONSTANTS_H */
