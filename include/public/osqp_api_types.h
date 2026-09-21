@@ -152,6 +152,7 @@ typedef struct {
   OSQPFloat solve_time;         ///< Solve phase time (seconds)
   OSQPFloat linear_system_time; ///< Time spent in ADMM linear-system solves (seconds)
   OSQPFloat projection_time;    ///< Time spent in ADMM projections (seconds)
+  OSQPFloat rho_update_time;    ///< Time spent updating rho and the linear solver during solve (seconds)
   OSQPFloat update_time;        ///< Update phase time (seconds)
   OSQPFloat polish_time;        ///< Polish phase time (seconds)
   OSQPFloat run_time;           ///< Total solve time (seconds)

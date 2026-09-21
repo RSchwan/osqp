@@ -837,6 +837,7 @@ void reset_info(OSQPInfo *info) {
   info->solve_time = 0.0;  // Solve time to zero
   info->linear_system_time = 0.0;
   info->projection_time = 0.0;
+  info->rho_update_time = 0.0;
 # ifndef OSQP_EMBEDDED_MODE
   info->polish_time = 0.0; // Polish time to zero
 # endif /* ifndef OSQP_EMBEDDED_MODE */

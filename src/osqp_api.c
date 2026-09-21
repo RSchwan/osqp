@@ -1476,7 +1476,14 @@ OSQPInt osqp_update_rho(OSQPSolver* solver,
   }
 
   // Update rho_vec in KKT matrix
+#ifdef OSQP_ENABLE_PROFILING
+  if (work->rho_update_from_solve) osqp_tic(work->section_timer);
+#endif /* ifdef OSQP_ENABLE_PROFILING */
   exitflag = work->linsys_solver->update_rho_vec(work->linsys_solver, work->rho_vec, solver->settings->rho);
+#ifdef OSQP_ENABLE_PROFILING
+  if (work->rho_update_from_solve)
+    solver->info->rho_update_time += osqp_toc(work->section_timer);
+#endif /* ifdef OSQP_ENABLE_PROFILING */
 
 #ifdef OSQP_ENABLE_PROFILING
   if (work->rho_update_from_solve == 0)
