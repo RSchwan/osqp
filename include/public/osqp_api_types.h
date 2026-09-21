@@ -148,11 +148,13 @@ typedef struct {
   OSQPFloat rho_estimate; ///< Best rho estimate so far from residuals
 
   // timing information
-  OSQPFloat setup_time;  ///< Setup phase time (seconds)
-  OSQPFloat solve_time;  ///< Solve phase time (seconds)
-  OSQPFloat update_time; ///< Update phase time (seconds)
-  OSQPFloat polish_time; ///< Polish phase time (seconds)
-  OSQPFloat run_time;    ///< Total solve time (seconds)
+  OSQPFloat setup_time;         ///< Setup phase time (seconds)
+  OSQPFloat solve_time;         ///< Solve phase time (seconds)
+  OSQPFloat linear_system_time; ///< Time spent in ADMM linear-system solves (seconds)
+  OSQPFloat projection_time;    ///< Time spent in ADMM projections (seconds)
+  OSQPFloat update_time;        ///< Update phase time (seconds)
+  OSQPFloat polish_time;        ///< Polish phase time (seconds)
+  OSQPFloat run_time;           ///< Total solve time (seconds)
 
   // Convergence information
   OSQPFloat primdual_int;  ///< Integral of duality gap over time (Primal-dual integral), requires profiling

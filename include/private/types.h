@@ -229,7 +229,8 @@ struct OSQPWorkspace_ {
   OSQPFloat rho_inv;
 
 # ifdef OSQP_ENABLE_PROFILING
-  OSQPTimer* timer;       ///< timer object
+  OSQPTimer* timer;         ///< timer object
+  OSQPTimer* section_timer; ///< timer for accumulated ADMM sections
 
   /// flag indicating whether the solve function has been run before
   OSQPInt first_run;

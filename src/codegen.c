@@ -233,6 +233,8 @@ static OSQPInt write_info(FILE*           f,
   fprintf(f, "  (OSQPFloat)%.20f,\n", info->rho_estimate);
   fprintf(f, "  (OSQPFloat)0.0,\n"); // setup_time
   fprintf(f, "  (OSQPFloat)0.0,\n"); // solve_time
+  fprintf(f, "  (OSQPFloat)0.0,\n"); // linear_system_time
+  fprintf(f, "  (OSQPFloat)0.0,\n"); // projection_time
   fprintf(f, "  (OSQPFloat)0.0,\n"); // update_time
   fprintf(f, "  (OSQPFloat)0.0,\n"); // polish_time
   fprintf(f, "  (OSQPFloat)0.0,\n"); // run_time

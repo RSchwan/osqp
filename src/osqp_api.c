@@ -371,7 +371,9 @@ OSQPInt osqp_setup(OSQPSolver**         solverp,
   // Start and allocate directly timer
 # ifdef OSQP_ENABLE_PROFILING
   work->timer = OSQPTimer_new();
-  if (!(work->timer)) return osqp_error(OSQP_MEM_ALLOC_ERROR);
+  work->section_timer = OSQPTimer_new();
+  if (!(work->timer) || !(work->section_timer))
+    return osqp_error(OSQP_MEM_ALLOC_ERROR);
   osqp_tic(work->timer);
 # endif /* ifdef OSQP_ENABLE_PROFILING */
 
@@ -721,7 +723,13 @@ osqp_profiler_sec_push(OSQP_PROFILER_SEC_OPT_SOLVE);
 
     /* Compute z^{k+1} */
     osqp_profiler_sec_push(OSQP_PROFILER_SEC_ADMM_PROJ);
+#ifdef OSQP_ENABLE_PROFILING
+    osqp_tic(work->section_timer);
+#endif /* ifdef OSQP_ENABLE_PROFILING */
     update_z(solver);
+#ifdef OSQP_ENABLE_PROFILING
+    solver->info->projection_time += osqp_toc(work->section_timer);
+#endif /* ifdef OSQP_ENABLE_PROFILING */
     osqp_profiler_sec_pop(OSQP_PROFILER_SEC_ADMM_PROJ);
 
     /* Compute y^{k+1} */
@@ -1164,6 +1172,7 @@ OSQPInt osqp_cleanup(OSQPSolver* solver) {
 # ifdef OSQP_ENABLE_PROFILING
     // Free timer
     if (work->timer) OSQPTimer_free(work->timer);
+    if (work->section_timer) OSQPTimer_free(work->section_timer);
 # endif /* ifdef OSQP_ENABLE_PROFILING */
 
 # ifdef OSQP_ENABLE_DERIVATIVES

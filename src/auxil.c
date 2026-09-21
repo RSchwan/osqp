@@ -171,7 +171,13 @@ void update_xz_tilde(OSQPSolver* solver,
   compute_rhs(solver);
 
   // Solve linear system
+#ifdef OSQP_ENABLE_PROFILING
+  osqp_tic(work->section_timer);
+#endif /* ifdef OSQP_ENABLE_PROFILING */
   work->linsys_solver->solve(work->linsys_solver, work->xz_tilde, admm_iter);
+#ifdef OSQP_ENABLE_PROFILING
+  solver->info->linear_system_time += osqp_toc(work->section_timer);
+#endif /* ifdef OSQP_ENABLE_PROFILING */
 }
 
 void update_x(OSQPSolver* solver) {
@@ -829,6 +835,8 @@ void reset_info(OSQPInfo *info) {
 
   // Initialize info values.
   info->solve_time = 0.0;  // Solve time to zero
+  info->linear_system_time = 0.0;
+  info->projection_time = 0.0;
 # ifndef OSQP_EMBEDDED_MODE
   info->polish_time = 0.0; // Polish time to zero
 # endif /* ifndef OSQP_EMBEDDED_MODE */
