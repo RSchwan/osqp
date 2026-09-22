@@ -108,6 +108,13 @@ __global__ void vec_scale_penalty_kernel(OSQPFloat*       a1,
         f1 = c / (e * e); f2 = 1.0;         fd = e;
         break;
 
+      case OSQP_PENALTY_NORM2:
+      case OSQP_PENALTY_NORMINF:
+        /* Both are 1-homogeneous, so c*alpha*||s/E|| = (c*alpha/E)*||s||.
+           This needs E constant on the group, which scale_data enforces. */
+        f1 = c / e;       f2 = 1.0;         fd = 1.0;
+        break;
+
       default:
         continue;   // Hard row, parameters unused
     }
@@ -273,6 +280,12 @@ __device__ static OSQPFloat penalty_reccone_rate_row(OSQPFloat w,
     case OSQP_PENALTY_HUBER:
       return (a1 * d) * dist;
 
+    case OSQP_PENALTY_NORM2:
+    case OSQP_PENALTY_NORMINF:
+      /* Charged by the group kernel, which needs the whole group at once.
+         Both norms are positively homogeneous, so a group never blocks. */
+      return 0.0;
+
     default:
       return dist > tol ? OSQP_INFTY : 0.0;
   }
@@ -297,11 +310,17 @@ __global__ void vec_prox_penalty_kernel(      OSQPFloat* z,
   OSQPInt grid_size = blockDim.x * gridDim.x;
 
   for(OSQPInt i = idx; i < n; i += grid_size) {
-    OSQPFloat vbar = c_min(c_max(v[i], l[i]), u[i]);
+    OSQPInt   t = TYPE < 0 ? type[i] : TYPE;
+    OSQPFloat vbar;
+
+    /* Left to group_prox_penalty_kernel, which runs first and has already
+       written this row; overwriting it would also break z aliasing v */
+    if ((t == OSQP_PENALTY_NORM2) || (t == OSQP_PENALTY_NORMINF)) continue;
+
+    vbar = c_min(c_max(v[i], l[i]), u[i]);
 
     z[i] = vbar + prox_penalty_row(v[i] - vbar, rho_vec ? rho_vec[i] : rho,
-                                   TYPE < 0 ? type[i] : TYPE,
-                                   a1[i], a2[i], d[i]);
+                                   t, a1[i], a2[i], d[i]);
   }
 }
 
@@ -1370,6 +1389,12 @@ void cuda_vec_penalty_check(const OSQPFloat* d_a1,
           break;                                                               \
         case OSQP_PENALTY_HUBER:                                               \
           KERNEL<OSQP_PENALTY_HUBER><<<number_of_blocks, THREADS_PER_BLOCK>>>(__VA_ARGS__); \
+          break;                                                               \
+        case OSQP_PENALTY_NORM2:                                               \
+          KERNEL<OSQP_PENALTY_NORM2><<<number_of_blocks, THREADS_PER_BLOCK>>>(__VA_ARGS__); \
+          break;                                                               \
+        case OSQP_PENALTY_NORMINF:                                             \
+          KERNEL<OSQP_PENALTY_NORMINF><<<number_of_blocks, THREADS_PER_BLOCK>>>(__VA_ARGS__); \
           break;                                                               \
         default:                                                               \
           KERNEL<OSQP_PENALTY_NONE><<<number_of_blocks, THREADS_PER_BLOCK>>>(__VA_ARGS__);  \

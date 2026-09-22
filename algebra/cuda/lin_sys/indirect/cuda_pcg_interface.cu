@@ -251,7 +251,7 @@ OSQPInt solve_linsys_cudapcg(cudapcg_solver* s,
     /* Compute z = A * x */
     if (s->m) cuda_mat_Axpy(s->A, s->vecx, s->vecz, 1.0, 0.0);
   }
-  else {
+  else if (s->m) {
     /* Copy the second part of b to z */
     cuda_vec_copy_d2d(s->d_z, b->d_val + s->n, s->m);
 

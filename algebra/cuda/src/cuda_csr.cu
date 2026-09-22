@@ -211,14 +211,14 @@ __global__ void compact_rows(const OSQPInt* row_ind,
   }
 }
 
-__global__ void vector_init_abs_kernel(const OSQPInt* a,
-                                             OSQPInt* b,
-                                             OSQPInt  n) {
+__global__ void vector_init_nonzero_kernel(const OSQPInt* a,
+                                                 OSQPInt* b,
+                                                 OSQPInt  n) {
 
   OSQPInt i  = threadIdx.x + blockDim.x * blockIdx.x;
 
   if (i < n) {
-    b[i] = abs(a[i]);
+    b[i] = (a[i] != 0);
   }
 }
 
@@ -782,9 +782,9 @@ void cuda_submat_byrows(const csr* A,
   cuda_malloc((void **) &d_predicate,       nnz * sizeof(OSQPInt));
   cuda_malloc((void **) &d_compact_address, nnz * sizeof(OSQPInt));
 
-  // Copy rows array to device and set -1s to ones
-  checkCudaErrors(cudaMemcpy(d_row_predicate, d_rows, m * sizeof(OSQPInt), cudaMemcpyDeviceToDevice));
-  vector_init_abs_kernel<<<(m/THREADS_PER_BLOCK) + 1,THREADS_PER_BLOCK>>>(d_row_predicate, d_row_predicate, m);
+  // Map the row flags to a 0/1 predicate: any nonzero flag (e.g. -1/1 for an
+  // active bound, -2/2 for a soft row on a smooth piece) selects the row
+  vector_init_nonzero_kernel<<<(m/THREADS_PER_BLOCK) + 1,THREADS_PER_BLOCK>>>(d_rows, d_row_predicate, m);
 
   // Calculate new row numbering and get new number of rows
   thrust::inclusive_scan(thrust::device, d_row_predicate, d_row_predicate + m, d_new_row_number);
