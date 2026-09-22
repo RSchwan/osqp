@@ -918,14 +918,21 @@ OSQPInt OSQPVectorf_ew_bounds_type(OSQPVectori*       iseq,
   OSQPInt*   tv = type ? type->values : OSQP_NULL;
 
   for (i = 0; i < length; i++) {
+    OSQPInt t = tv ? tv[i] : default_type;
 
     old_value = iseqv[i];
 
-    if ((lv[i] < -infval) && (uv[i] > infval)) {
+    if ((t == OSQP_PENALTY_NORM2) || (t == OSQP_PENALTY_NORMINF)) {
+      /* A group prox takes a scalar rho, so every row of a group must land on
+         the same one. Classifying unconditionally is what makes that hold
+         after any later bound update, which no setup-time check could. The
+         cost is that a free grouped row loses OSQP_RHO_MIN, and such a row is
+         inert anyway: its bound residual is identically zero. */
+      iseqv[i] = 0;
+    } else if ((lv[i] < -infval) && (uv[i] > infval)) {
       // Loose bounds
       iseqv[i] = -1;
-    } else if ((uv[i] - lv[i] < tol) &&
-               ((tv ? tv[i] : default_type) == OSQP_PENALTY_NONE)) {
+    } else if ((uv[i] - lv[i] < tol) && (t == OSQP_PENALTY_NONE)) {
       // Equality constraints
       iseqv[i] = 1;
     } else {

@@ -200,7 +200,7 @@ std::vector<OSQPFloat> solve_soft(const Problem&              prob,
             osqp_setup_penalty(solver.get(),
                                opts.uniform ? type[0] : OSQP_PENALTY_NONE,
                                opts.uniform ? OSQP_NULL : type.data(),
-                               a1.data(), a2.data(), dl.data()) == 0);
+                               a1.data(), a2.data(), dl.data(), 0, OSQP_NULL) == 0);
 
   mu_assert("Soft QP: solve error", osqp_solve(solver.get()) == 0);
   mu_assert("Soft QP: not solved", solver->info->status_val == OSQP_SOLVED);

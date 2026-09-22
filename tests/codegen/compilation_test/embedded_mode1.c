@@ -18,6 +18,7 @@
 
 #include "data_penalty_uniform_embedded_1_workspace.h"
 #include "data_penalty_mixed_embedded_1_workspace.h"
+#include "data_penalty_group_embedded_1_workspace.h"
 
 int main() {
   OSQPInt exitflag;
@@ -163,6 +164,31 @@ int main() {
     }
 
     printf( "  Solved data_penalty_mixed, penalty term %g\n", (double)pen );
+  }
+
+
+  /*
+   * soft constraints, non-separable penalty groups
+   */
+  exitflag = osqp_solve( &data_penalty_group_embedded_1_solver );
+
+  if( exitflag > 0 ) {
+    printf( "  OSQP errored on data_penalty_group: %s\n", osqp_error_message(exitflag));
+    return (int)exitflag;
+  } else {
+    /* The group CSR and the sort scratch have to survive codegen: without them
+       the generated solver would quietly treat the grouped rows as hard */
+    OSQPFloat obj = data_penalty_group_embedded_1_solver.info->obj_val;
+    OSQPFloat pen = data_penalty_group_embedded_1_solver.info->penalty_val;
+
+    if( c_absval(obj - (OSQPFloat)2.214000000000) > 1e-6 ||
+        c_absval(pen - (OSQPFloat)0.334000000000) > 1e-6 ) {
+      printf( "  data_penalty_group disagrees with the library: obj %g, penalty %g\n",
+              (double)obj, (double)pen );
+      return 1;
+    }
+
+    printf( "  Solved data_penalty_group, penalty term %g\n", (double)pen );
   }
 
   return 0;

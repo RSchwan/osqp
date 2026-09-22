@@ -52,15 +52,25 @@ extern "C" {
 
 /* Use customized functions -----------------------------------------------   */
 
+/* NB: c_sqrt is outside the embedded guard below because the Euclidean-norm
+   group penalty needs it in the z-update, which generated code runs too. */
+# include <math.h>
+# ifndef OSQP_USE_FLOAT // Doubles
+#  define c_sqrt sqrt
+# else          // Floats
+#  define c_sqrt sqrtf
+# endif /* ifndef OSQP_USE_FLOAT */
+
 # if OSQP_EMBEDDED_MODE != 1
 
-#  include <math.h>
 #  ifndef OSQP_USE_FLOAT // Doubles
-#   define c_sqrt sqrt
 #   define c_fmod fmod
+#   define c_log  log
+#   define c_exp  exp
 #  else          // Floats
-#   define c_sqrt sqrtf
 #   define c_fmod fmodf
+#   define c_log  logf
+#   define c_exp  expf
 #  endif /* ifndef OSQP_USE_FLOAT */
 
 # endif // end OSQP_EMBEDDED_MODE

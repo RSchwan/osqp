@@ -218,6 +218,113 @@ void cuda_vec_penalty_conj_value(const OSQPFloat* d_y,
                                        OSQPFloat* h_res,
                                        OSQPFloat* d_res);
 
+/*******************************************************************************
+ * Non-separable penalty groups                                                *
+ *                                                                             *
+ * Group g owns the rows d_rows[d_gp[g] .. d_gp[g+1]-1] and carries one        *
+ * penalty, OSQP_PENALTY_NORM2 or OSQP_PENALTY_NORMINF, whose type and weight  *
+ * are read from the group's first row; validation keeps every row of a group  *
+ * in agreement.  Only grouped rows are touched, so these compose with the      *
+ * elementwise routines above over a disjoint row set.                          *
+ *                                                                             *
+ * Every routine launches one block per group and stays on the device: the      *
+ * group vectors are never staged on the host.                                  *
+ *******************************************************************************/
+
+/**
+ * Group part of the generalized projection, z = vbar + prox_{Phi/rho}(v-vbar).
+ * Runs before cuda_vec_prox_penalty, which then skips these rows, so that d_z
+ * may alias d_v.  d_sort_tmp is scratch of at least d_gp[ngroups] floats,
+ * holding the staged residuals.
+ */
+void cuda_vec_group_prox_penalty(      OSQPFloat* d_z,
+                                 const OSQPFloat* d_v,
+                                 const OSQPFloat* d_l,
+                                 const OSQPFloat* d_u,
+                                       OSQPFloat  rho,
+                                 const OSQPFloat* d_a1,
+                                 const OSQPInt*   d_type,
+                                       OSQPInt    default_type,
+                                 const OSQPInt*   d_gp,
+                                 const OSQPInt*   d_rows,
+                                       OSQPInt    ngroups,
+                                       OSQPFloat* d_sort_tmp);
+
+/**
+ * Group part of the objective, sum_g alpha1_g * ||R(z)_G||.
+ */
+void cuda_vec_group_penalty_value(const OSQPFloat* d_z,
+                                  const OSQPFloat* d_l,
+                                  const OSQPFloat* d_u,
+                                  const OSQPFloat* d_a1,
+                                  const OSQPInt*   d_type,
+                                        OSQPInt    default_type,
+                                  const OSQPInt*   d_gp,
+                                  const OSQPInt*   d_rows,
+                                        OSQPInt    ngroups,
+                                        OSQPFloat* h_res,
+                                        OSQPFloat* d_res);
+
+/**
+ * Group part of the recession rate along w.  Both group penalties are
+ * positively homogeneous, so a group only ever adds a finite rate.
+ */
+void cuda_vec_group_penalty_reccone_rate(const OSQPFloat* d_w,
+                                         const OSQPFloat* d_l,
+                                         const OSQPFloat* d_u,
+                                         const OSQPFloat* d_a1,
+                                         const OSQPInt*   d_type,
+                                               OSQPInt    default_type,
+                                         const OSQPInt*   d_gp,
+                                         const OSQPInt*   d_rows,
+                                               OSQPInt    ngroups,
+                                               OSQPFloat  infval,
+                                               OSQPFloat* h_res,
+                                               OSQPFloat* d_res);
+
+/**
+ * Group part of the conjugate, the indicator of the dual-norm ball.  Returns
+ * OSQP_INFTY if any group lies outside it, zero otherwise.
+ */
+void cuda_vec_group_penalty_conj_value(const OSQPFloat* d_y,
+                                       const OSQPFloat* d_a1,
+                                       const OSQPInt*   d_type,
+                                             OSQPInt    default_type,
+                                       const OSQPInt*   d_gp,
+                                       const OSQPInt*   d_rows,
+                                             OSQPInt    ngroups,
+                                             OSQPFloat* h_res,
+                                             OSQPFloat* d_res);
+
+/**
+ * Replace E on each group by the group's geometric mean, writing the
+ * correction Ehat/E into d_corr and 1 on every ungrouped row.
+ */
+void cuda_vec_group_equalize_scaling(      OSQPFloat* d_corr,
+                                     const OSQPFloat* d_E,
+                                           OSQPInt    n,
+                                     const OSQPInt*   d_gp,
+                                     const OSQPInt*   d_rows,
+                                           OSQPInt    ngroups);
+
+/**
+ * Check the group layout against the per-row types and weights, returning the
+ * OR of the OSQP_PENALTY_ERR_GROUP_* flags.  Valid with ngroups = 0, where it
+ * only rejects a group type outside any group.
+ */
+void cuda_vec_group_penalty_check(const OSQPFloat* d_a1,
+                                  const OSQPFloat* d_a2,
+                                  const OSQPFloat* d_d,
+                                  const OSQPInt*   d_type,
+                                        OSQPInt    default_type,
+                                        OSQPInt    n,
+                                  const OSQPInt*   d_gp,
+                                  const OSQPInt*   d_rows,
+                                        OSQPInt    ngroups,
+                                        OSQPInt    ngrouped,
+                                        OSQPInt*   h_res,
+                                        OSQPInt*   d_res);
+
 /**
  * Round numbers within tol of 0 to 0.
  *

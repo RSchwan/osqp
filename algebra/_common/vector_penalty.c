@@ -143,11 +143,19 @@ void OSQPVectorf_ew_prox_penalty(OSQPVectorf*       z,
   }
 
   for (i = 0; i < length; i++) {
-    OSQPFloat vbar = c_min(c_max(vv[i], lv[i]), uv[i]);
+    OSQPInt   t = tv ? tv[i] : default_type;
+    OSQPFloat vbar;
+
+    /* Left to OSQPVectorf_group_prox_penalty, which runs first and has already
+       written this row. Skipping rather than overwriting is what lets z alias
+       v: the group pass needs v intact on its own rows, and this pass needs it
+       intact on the rest, so neither may touch the other's. */
+    if ((t == OSQP_PENALTY_NORM2) || (t == OSQP_PENALTY_NORMINF)) continue;
+
+    vbar = c_min(c_max(vv[i], lv[i]), uv[i]);
 
     zv[i] = vbar + ew_prox_penalty_row(vv[i] - vbar, rv ? rv[i] : rho,
-                                       tv ? tv[i] : default_type,
-                                       a1[i], a2[i], d[i]);
+                                       t, a1[i], a2[i], d[i]);
   }
 }
 
@@ -217,6 +225,13 @@ static OSQPFloat penalty_reccone_rate_row(OSQPFloat w,
       /* NB: the asymptotic slope of alpha1*h_delta is alpha1*delta */
       slope = a1 * d;
       break;
+
+    case OSQP_PENALTY_NORM2:
+    case OSQP_PENALTY_NORMINF:
+      /* Charged by OSQPVectorf_group_penalty_reccone_rate, which needs the
+         whole group at once. Blocking nothing here is not an approximation:
+         both norms are positively homogeneous, so a group never blocks. */
+      return 0.0;
 
     default:
       return dist > tol ? OSQP_INFTY : 0.0;
@@ -295,7 +310,522 @@ OSQPFloat OSQPVectorf_penalty_conj_value(const OSQPVectorf* y,
   return val;
 }
 
+/*******************************************************************************
+ * Non-separable penalty groups                                                *
+ *                                                                             *
+ * Each routine walks the groups in CSR order and touches only their rows, so  *
+ * it composes with the elementwise pass above over a disjoint row set.  The    *
+ * CUDA backend does not share this code: it runs its own device kernels, in    *
+ * algebra/cuda/src/cuda_lin_alg.cu.                                            *
+ *******************************************************************************/
+
+/* Size at which the l_inf prox stops insertion-sorting and starts heapsorting.
+   |r_G| barely moves between ADMM iterations, so the array arrives nearly
+   sorted and insertion sort runs in O(|G|) on the common path; heapsort only
+   bounds the rare large group, without recursing. */
+#define OSQP_PENALTY_SORT_SMALL (32)
+
+/* Type of a group, which validation keeps equal across its rows */
+static OSQPInt group_type(const OSQPInt* tv,
+                          OSQPInt        default_type,
+                          const OSQPInt* rows,
+                          OSQPInt        start) {
+
+  return tv ? tv[rows[start]] : default_type;
+}
+
+static void penalty_insertion_sort_desc(OSQPFloat* a,
+                                        OSQPInt    n) {
+
+  OSQPInt i, j;
+
+  for (i = 1; i < n; i++) {
+    OSQPFloat key = a[i];
+
+    for (j = i - 1; (j >= 0) && (a[j] < key); j--) a[j + 1] = a[j];
+
+    a[j + 1] = key;
+  }
+}
+
+/* Restore the min-heap rooted at start over a[0..n-1] */
+static void penalty_sift_down_min(OSQPFloat* a,
+                                  OSQPInt    start,
+                                  OSQPInt    n) {
+
+  OSQPInt root = start;
+
+  while (2 * root + 1 < n) {
+    OSQPInt   child = 2 * root + 1;
+    OSQPFloat tmp;
+
+    if ((child + 1 < n) && (a[child + 1] < a[child])) child++;
+
+    if (a[root] <= a[child]) return;
+
+    tmp = a[root]; a[root] = a[child]; a[child] = tmp;
+    root = child;
+  }
+}
+
+/* Heapsort descending: a min-heap repeatedly moves its smallest element to the
+   back. Iterative, in place, O(n log n) worst case. */
+static void penalty_heap_sort_desc(OSQPFloat* a,
+                                   OSQPInt    n) {
+
+  OSQPInt i;
+
+  for (i = n / 2 - 1; i >= 0; i--) penalty_sift_down_min(a, i, n);
+
+  for (i = n - 1; i > 0; i--) {
+    OSQPFloat tmp = a[0]; a[0] = a[i]; a[i] = tmp;
+
+    penalty_sift_down_min(a, 0, i);
+  }
+}
+
+static void penalty_sort_desc(OSQPFloat* a,
+                              OSQPInt    n) {
+
+  if (n <= OSQP_PENALTY_SORT_SMALL) penalty_insertion_sort_desc(a, n);
+  else                              penalty_heap_sort_desc(a, n);
+}
+
+/* The threshold lambda > 0 solving sum_i (|r_i| - lambda)_+ = tau, given |r|
+   sorted descending in a[0..n-1]. Exact in finitely many operations: the
+   largest k with a[k] > (sum_{j<=k} a[j] - tau)/(k+1) identifies the entries
+   that stay above lambda, and lambda follows in closed form.
+   The caller guarantees sum_i |r_i| > tau, so such a k exists. */
+static OSQPFloat penalty_l1ball_threshold(const OSQPFloat* a,
+                                          OSQPInt          n,
+                                          OSQPFloat        tau) {
+
+  OSQPFloat cum    = 0.0;
+  OSQPFloat lambda = 0.0;
+  OSQPInt   k;
+
+  for (k = 0; k < n; k++) {
+    OSQPFloat cand;
+
+    cum += a[k];
+    cand = (cum - tau) / (OSQPFloat)(k + 1);
+
+    /* NB: tested as !(a[k] > cand) so that a NaN stops the scan */
+    if (!(a[k] > cand)) break;
+
+    lambda = cand;
+  }
+
+  return lambda;
+}
+
+/* Group part of z = vbar + prox_{Phi/rho}(v - vbar).  Runs before the
+   elementwise pass, which then leaves these rows alone; that split is what
+   lets z alias v, each pass needing v intact on the other's rows.
+   sort_tmp holds 2*ptr[ngroups] floats: the staged residuals, then a sortable
+   copy of their magnitudes. */
+static void group_prox_penalty(OSQPFloat*       zv,
+                               const OSQPFloat* vv,
+                               const OSQPFloat* lv,
+                               const OSQPFloat* uv,
+                               OSQPFloat        rho,
+                               const OSQPFloat* a1,
+                               const OSQPInt*   tv,
+                               OSQPInt          default_type,
+                               const OSQPInt*   gp,
+                               const OSQPInt*   rows,
+                               OSQPInt          ngroups,
+                               OSQPFloat*       sort_tmp) {
+
+  OSQPInt    g;
+  OSQPFloat* res = sort_tmp;                  /* signed residuals */
+  OSQPFloat* mag = sort_tmp + gp[ngroups];    /* sortable copy    */
+
+  for (g = 0; g < ngroups; g++) {
+    OSQPInt   start = gp[g];
+    OSQPInt   stop  = gp[g + 1];
+    OSQPFloat tau   = a1[rows[start]] / rho;
+    OSQPInt   k;
+
+    /* Stage the residual r = v - Proj_[l,u](v) before writing anything back,
+       since z is allowed to alias v, and write the projection into z so that
+       the prox below only has to add its slack to it. */
+    for (k = start; k < stop; k++) {
+      OSQPInt   i    = rows[k];
+      OSQPFloat vbar = c_min(c_max(vv[i], lv[i]), uv[i]);
+
+      res[k] = vv[i] - vbar;
+      zv[i]  = vbar;
+    }
+
+    switch (group_type(tv, default_type, rows, start)) {
+      case OSQP_PENALTY_NORM2: {
+        /* prox = (1 - tau/||r||_2)_+ * r */
+        OSQPFloat nrm   = 0.0;
+        OSQPFloat scale = 0.0;
+
+        for (k = start; k < stop; k++) nrm += res[k] * res[k];
+
+        nrm = c_sqrt(nrm);
+
+        if (nrm > tau) scale = 1.0 - tau / nrm;
+
+        for (k = start; k < stop; k++) zv[rows[k]] += scale * res[k];
+        break;
+      }
+
+      case OSQP_PENALTY_NORMINF: {
+        /* prox = r - Proj_{||.||_1 <= tau}(r) by Moreau, which is zero inside
+           the ball and sign(r_i)*min(|r_i|, lambda) outside it */
+        OSQPFloat sum = 0.0;
+        OSQPFloat lambda;
+        OSQPInt   n   = stop - start;
+
+        for (k = start; k < stop; k++) {
+          mag[k] = c_absval(res[k]);
+          sum   += mag[k];
+        }
+
+        /* Inside the dual ball the group's whole slack is driven to zero */
+        if (sum <= tau) break;
+
+        /* Sorting permutes mag, so the signs stay in res */
+        penalty_sort_desc(mag + start, n);
+
+        lambda = penalty_l1ball_threshold(mag + start, n, tau);
+
+        for (k = start; k < stop; k++) {
+          OSQPFloat s = c_min(c_absval(res[k]), lambda);
+
+          zv[rows[k]] += (res[k] > 0.0 ? s : -s);
+        }
+        break;
+      }
+
+      default:
+        break;   /* Not a group type; validation rules this out */
+    }
+  }
+}
+
+/* sum_g alpha1_g * ||R(z)_G||, with R(z) = z - min(max(z,l),u) */
+static OSQPFloat group_penalty_value(const OSQPFloat* zv,
+                                     const OSQPFloat* lv,
+                                     const OSQPFloat* uv,
+                                     const OSQPFloat* a1,
+                                     const OSQPInt*   tv,
+                                     OSQPInt          default_type,
+                                     const OSQPInt*   gp,
+                                     const OSQPInt*   rows,
+                                     OSQPInt          ngroups) {
+
+  OSQPInt   g;
+  OSQPFloat val = 0.0;
+
+  for (g = 0; g < ngroups; g++) {
+    OSQPInt   start = gp[g];
+    OSQPInt   stop  = gp[g + 1];
+    OSQPInt   gt    = group_type(tv, default_type, rows, start);
+    OSQPFloat acc   = 0.0;
+    OSQPInt   k;
+
+    for (k = start; k < stop; k++) {
+      OSQPInt   i    = rows[k];
+      OSQPFloat zbar = c_min(c_max(zv[i], lv[i]), uv[i]);
+      OSQPFloat s    = zv[i] - zbar;
+
+      if (gt == OSQP_PENALTY_NORM2) acc += s * s;
+      else                          acc  = c_max(acc, c_absval(s));
+    }
+
+    if (gt == OSQP_PENALTY_NORM2) acc = c_sqrt(acc);
+
+    val += a1[rows[start]] * acc;
+  }
+
+  return val;
+}
+
+/* sum_g alpha1_g * || (dist(w_i, rec[l_i,u_i]))_{i in G} ||.  Both group
+   penalties are positively homogeneous, so a group always grows exactly
+   linearly and never blocks a recession direction. */
+static OSQPFloat group_penalty_reccone_rate(const OSQPFloat* wv,
+                                            const OSQPFloat* lv,
+                                            const OSQPFloat* uv,
+                                            const OSQPFloat* a1,
+                                            const OSQPInt*   tv,
+                                            OSQPInt          default_type,
+                                            const OSQPInt*   gp,
+                                            const OSQPInt*   rows,
+                                            OSQPInt          ngroups,
+                                            OSQPFloat        infval) {
+
+  OSQPInt   g;
+  OSQPFloat rate = 0.0;
+
+  for (g = 0; g < ngroups; g++) {
+    OSQPInt   start = gp[g];
+    OSQPInt   stop  = gp[g + 1];
+    OSQPInt   gt    = group_type(tv, default_type, rows, start);
+    OSQPFloat acc   = 0.0;
+    OSQPInt   k;
+
+    for (k = start; k < stop; k++) {
+      OSQPInt   i = rows[k];
+      OSQPFloat dist;
+
+      if ((uv[i] < +infval) && (wv[i] > 0.0))      dist = wv[i];
+      else if ((lv[i] > -infval) && (wv[i] < 0.0)) dist = -wv[i];
+      else                                         continue;
+
+      if (gt == OSQP_PENALTY_NORM2) acc += dist * dist;
+      else                          acc  = c_max(acc, dist);
+    }
+
+    if (gt == OSQP_PENALTY_NORM2) acc = c_sqrt(acc);
+
+    rate += a1[rows[start]] * acc;
+  }
+
+  return rate;
+}
+
+/* A norm's conjugate is the indicator of the dual-norm ball, so a group
+   contributes nothing to the dual objective unless it is infeasible.
+   in_domain applies the caller's roundoff tolerance. */
+static OSQPFloat group_penalty_conj_value(const OSQPFloat* yv,
+                                          const OSQPFloat* a1,
+                                          const OSQPInt*   tv,
+                                          OSQPInt          default_type,
+                                          const OSQPInt*   gp,
+                                          const OSQPInt*   rows,
+                                          OSQPInt          ngroups) {
+
+  OSQPInt g;
+
+  for (g = 0; g < ngroups; g++) {
+    OSQPInt   start = gp[g];
+    OSQPInt   stop  = gp[g + 1];
+    OSQPFloat lim   = a1[rows[start]];
+    OSQPFloat acc   = 0.0;
+    OSQPInt   k;
+
+    switch (group_type(tv, default_type, rows, start)) {
+      case OSQP_PENALTY_NORM2:
+        /* dual of ||.||_2 is ||.||_2 */
+        for (k = start; k < stop; k++) acc += yv[rows[k]] * yv[rows[k]];
+        acc = c_sqrt(acc);
+        break;
+
+      case OSQP_PENALTY_NORMINF:
+        /* dual of ||.||_inf is ||.||_1 */
+        for (k = start; k < stop; k++) acc += c_absval(yv[rows[k]]);
+        break;
+
+      default:
+        continue;
+    }
+
+    if (acc > lim + OSQP_PENALTY_CONJ_TOL * (1.0 + lim)) return OSQP_INFTY;
+  }
+
+  return 0.0;
+}
+
+void OSQPVectorf_group_prox_penalty(OSQPVectorf*       z,
+                                    const OSQPVectorf* v,
+                                    const OSQPVectorf* l,
+                                    const OSQPVectorf* u,
+                                    OSQPFloat          rho,
+                                    const OSQPVectorf* alpha1,
+                                    const OSQPVectori* type,
+                                    OSQPInt            default_type,
+                                    const OSQPVectori* group_ptr,
+                                    const OSQPVectori* group_rows,
+                                    OSQPInt            ngroups,
+                                    OSQPVectorf*       sort_tmp) {
+
+  group_prox_penalty(z->values, v->values, l->values, u->values,
+                          rho, alpha1->values,
+                          type ? type->values : OSQP_NULL, default_type,
+                          group_ptr->values, group_rows->values, ngroups,
+                          sort_tmp->values);
+}
+
+OSQPFloat OSQPVectorf_group_penalty_value(const OSQPVectorf* z,
+                                          const OSQPVectorf* l,
+                                          const OSQPVectorf* u,
+                                          const OSQPVectorf* alpha1,
+                                          const OSQPVectori* type,
+                                          OSQPInt            default_type,
+                                          const OSQPVectori* group_ptr,
+                                          const OSQPVectori* group_rows,
+                                          OSQPInt            ngroups,
+                                          OSQPVectorf*       scratch) {
+
+  (void)scratch; /* Only device backends need reduction storage. */
+
+  return group_penalty_value(z->values, l->values, u->values,
+                             alpha1->values,
+                             type ? type->values : OSQP_NULL, default_type,
+                             group_ptr->values, group_rows->values, ngroups);
+}
+
+OSQPFloat OSQPVectorf_group_penalty_reccone_rate(const OSQPVectorf* w,
+                                                 const OSQPVectorf* l,
+                                                 const OSQPVectorf* u,
+                                                 const OSQPVectorf* alpha1,
+                                                 const OSQPVectori* type,
+                                                 OSQPInt            default_type,
+                                                 const OSQPVectori* group_ptr,
+                                                 const OSQPVectori* group_rows,
+                                                 OSQPInt            ngroups,
+                                                 OSQPFloat          infval,
+                                                 OSQPVectorf*       scratch) {
+
+  (void)scratch; /* Only device backends need reduction storage. */
+
+  return group_penalty_reccone_rate(w->values, l->values, u->values,
+                                    alpha1->values,
+                                    type ? type->values : OSQP_NULL,
+                                    default_type,
+                                    group_ptr->values, group_rows->values,
+                                    ngroups, infval);
+}
+
+OSQPFloat OSQPVectorf_group_penalty_conj_value(const OSQPVectorf* y,
+                                               const OSQPVectorf* alpha1,
+                                               const OSQPVectori* type,
+                                               OSQPInt            default_type,
+                                               const OSQPVectori* group_ptr,
+                                               const OSQPVectori* group_rows,
+                                               OSQPInt            ngroups,
+                                               OSQPVectorf*       scratch) {
+
+  (void)scratch; /* Only device backends need reduction storage. */
+
+  return group_penalty_conj_value(y->values, alpha1->values,
+                                  type ? type->values : OSQP_NULL,
+                                  default_type,
+                                  group_ptr->values, group_rows->values,
+                                  ngroups);
+}
+
 #if OSQP_EMBEDDED_MODE != 1
+
+
+
+/* Replace E on each group by the group's geometric mean, writing the
+   correction Ehat/E into corr and 1 on every ungrouped row. */
+static void group_equalize_scaling(OSQPFloat*       cv,
+                                   const OSQPFloat* Ev,
+                                   OSQPInt          length,
+                                   const OSQPInt*   gp,
+                                   const OSQPInt*   rows,
+                                   OSQPInt          ngroups) {
+
+  OSQPInt i, g;
+
+  for (i = 0; i < length; i++) cv[i] = 1.0;
+
+  for (g = 0; g < ngroups; g++) {
+    OSQPInt   start = gp[g];
+    OSQPInt   stop  = gp[g + 1];
+    OSQPInt   n     = stop - start;
+    OSQPFloat mean  = 0.0;
+    OSQPInt   k;
+
+    /* Averaged in the log so that a long group cannot overflow the product.
+       E is strictly positive, being a Ruiz factor passed through
+       limit_scaling_vector. */
+    for (k = start; k < stop; k++) mean += c_log(Ev[rows[k]]);
+
+    mean = c_exp(mean / (OSQPFloat)n);
+
+    for (k = start; k < stop; k++) cv[rows[k]] = mean / Ev[rows[k]];
+  }
+}
+
+/* Check the group layout against the per-row types and weights; see
+   OSQPVectorf_penalty_groups_check. */
+static OSQPInt group_penalty_check(const OSQPFloat* a1,
+                                   const OSQPFloat* a2,
+                                   const OSQPFloat* d,
+                                   const OSQPInt*   tv,
+                                   OSQPInt          default_type,
+                                   OSQPInt          length,
+                                   const OSQPInt*   gp,
+                                   const OSQPInt*   rows,
+                                   OSQPInt          ngroups) {
+
+  OSQPInt i, g;
+  OSQPInt flags       = 0;
+  OSQPInt ngroup_rows = 0;
+
+  /* Count the rows that declare a group type. Comparing this against the rows
+     the groups actually contain is what rules out a group type outside any
+     group, without needing the inverse of the membership map. */
+  for (i = 0; i < length; i++) {
+    OSQPInt t = tv ? tv[i] : default_type;
+
+    if ((t == OSQP_PENALTY_NORM2) || (t == OSQP_PENALTY_NORMINF)) ngroup_rows++;
+  }
+
+  for (g = 0; g < ngroups; g++) {
+    OSQPInt   start = gp[g];
+    OSQPInt   stop  = gp[g + 1];
+    OSQPInt   gt;
+    OSQPFloat gw;
+    OSQPInt   k;
+
+    /* An empty group has no type or weight to read, so nothing below applies */
+    if (start >= stop) {
+      flags |= OSQP_PENALTY_ERR_GROUP_TYPE;
+      continue;
+    }
+
+    gt = tv ? tv[rows[start]] : default_type;
+    gw = a1[rows[start]];
+
+    if ((gt != OSQP_PENALTY_NORM2) && (gt != OSQP_PENALTY_NORMINF)) {
+      flags |= OSQP_PENALTY_ERR_GROUP_TYPE;
+      continue;
+    }
+
+    /* NB: tested as !(gw > 0) rather than (gw <= 0) so that NaN is rejected */
+    if (!(gw > 0.0) || (gw >= OSQP_INFTY)) flags |= OSQP_PENALTY_ERR_GROUP_WEIGHT;
+
+    for (k = start; k < stop; k++) {
+      OSQPInt i_row = rows[k];
+
+      if ((tv ? tv[i_row] : default_type) != gt) flags |= OSQP_PENALTY_ERR_GROUP_MIXED;
+      if (a1[i_row] != gw)                       flags |= OSQP_PENALTY_ERR_GROUP_MIXED;
+
+      /* Neither norm uses the remaining slots; a nonzero there is a weight the
+         caller believes is active, so it is rejected rather than ignored */
+      if ((a2[i_row] != 0.0) || (d[i_row] != 0.0)) flags |= OSQP_PENALTY_ERR_GROUP_WEIGHT;
+    }
+
+    ngroup_rows -= (stop - start);
+  }
+
+  /* Nonzero either way: a group type on an ungrouped row, or a grouped row
+     whose type is separable. The per-group loop above catches the latter, so
+     what survives here is the former. */
+  if (ngroup_rows != 0) flags |= OSQP_PENALTY_ERR_GROUP_TYPE;
+
+  return flags;
+}
+
+void OSQPVectorf_group_equalize_scaling(OSQPVectorf*       corr,
+                                        const OSQPVectorf* E,
+                                        const OSQPVectori* group_ptr,
+                                        const OSQPVectori* group_rows,
+                                        OSQPInt            ngroups) {
+
+  group_equalize_scaling(corr->values, E->values, corr->length,
+                         group_ptr->values, group_rows->values, ngroups);
+}
 
 void OSQPVectorf_ew_scale_penalty(OSQPVectorf*       alpha1,
                                   OSQPVectorf*       alpha2,
@@ -325,6 +855,13 @@ void OSQPVectorf_ew_scale_penalty(OSQPVectorf*       alpha1,
 
       case OSQP_PENALTY_HUBER:
         f1 = c / (e * e); f2 = 1.0;         fd = e;
+        break;
+
+      case OSQP_PENALTY_NORM2:
+      case OSQP_PENALTY_NORMINF:
+        /* Both are 1-homogeneous, so c*alpha*||s/E|| = (c*alpha/E)*||s||.
+           This needs E constant on the group, which scale_data enforces. */
+        f1 = c / e;       f2 = 1.0;         fd = 1.0;
         break;
 
       default:
@@ -377,4 +914,25 @@ OSQPInt OSQPVectorf_penalty_params_check(const OSQPVectorf* alpha1,
 
   return flags;
 }
+
+OSQPInt OSQPVectorf_penalty_groups_check(const OSQPVectorf* alpha1,
+                                         const OSQPVectorf* alpha2,
+                                         const OSQPVectorf* delta,
+                                         const OSQPVectori* type,
+                                         OSQPInt            default_type,
+                                         const OSQPVectori* group_ptr,
+                                         const OSQPVectori* group_rows,
+                                         OSQPInt            ngroups,
+                                         OSQPVectori*       scratch) {
+
+  (void)scratch; /* Only device backends need reduction storage. */
+
+  return group_penalty_check(alpha1->values, alpha2->values, delta->values,
+                             type ? type->values : OSQP_NULL, default_type,
+                             alpha1->length,
+                             ngroups ? group_ptr->values  : OSQP_NULL,
+                             ngroups ? group_rows->values : OSQP_NULL,
+                             ngroups);
+}
+
 #endif /* OSQP_EMBEDDED_MODE != 1 */

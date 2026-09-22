@@ -68,7 +68,7 @@ OSQPInt setup_penalty(OSQPSolver*    solver,
   std::vector<OSQPFloat> a1(m, 1.0), a2(m, 1.0), d(m, 1.0);
 
   return osqp_setup_penalty(solver, default_type, type,
-                            a1.data(), a2.data(), d.data());
+                            a1.data(), a2.data(), d.data(), 0, OSQP_NULL);
 }
 
 std::vector<OSQPInt> to_vector(const OSQPVectori* vec, OSQPInt len) {
@@ -166,7 +166,7 @@ TEST_CASE("Penalty: a soft row is never classified as an equality", "[penalty]")
 
     mu_assert("An infinite weight was accepted at setup",
               osqp_setup_penalty(solver.get(), OSQP_PENALTY_NONE, type,
-                                 a1, a2_inf, dl) != 0);
+                                 a1, a2_inf, dl, 0, OSQP_NULL) != 0);
     mu_assert("A rejected setup still allocated",
               solver->work->data->penalty == OSQP_NULL);
 
@@ -191,7 +191,7 @@ TEST_CASE("Penalty: a soft row is never classified as an equality", "[penalty]")
 
     mu_assert("Certificates: penalty setup error",
               osqp_setup_penalty(solver.get(), OSQP_PENALTY_NONE, l1l2,
-                                 zero_w, a2, dl) == 0);
+                                 zero_w, a2, dl, 0, OSQP_NULL) == 0);
 
     // Huber needs alpha1 > 0, and row 0 currently carries alpha1 == 0
     mu_assert("A type change with unusable weights was accepted",
@@ -390,7 +390,7 @@ TEST_CASE("Penalty: the dual-infeasibility rate is exact", "[penalty],[solve]")
     OSQPFloat dl[1]   = {dv};
 
     REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_NONE, type,
-                               a1, a2, dl) == 0);
+                               a1, a2, dl, 0, OSQP_NULL) == 0);
     osqp_solve(solver.get());
 
     return (OSQPInt)(solver->info->status_val == OSQP_DUAL_INFEASIBLE ||

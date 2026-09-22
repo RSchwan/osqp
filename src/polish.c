@@ -28,6 +28,18 @@ static OSQPPolishRow classify_polish_row(OSQPFloat z,
   OSQPPolishRow row = {0, 0.0, 0.0, 0.0, 0.0};
   OSQPFloat     s   = z - c_min(c_max(z, l), u);
 
+  /* A group penalty couples the row to the rest of its group, so neither the
+     active-set guess nor the (2,2) block can be decided row by row: the
+     Euclidean norm has a curvature alpha*(I - ss'/|s|^2)/|s| that is not
+     diagonal, and the subdifferential of the infinity norm depends on which
+     rows of the group attain the maximum. Grouped rows are therefore left out
+     of Ared with their dual frozen at the ADMM value, which keeps the polished
+     system consistent while the remaining rows are refined. */
+  if ((type == OSQP_PENALTY_NORM2) || (type == OSQP_PENALTY_NORMINF)) {
+    row.y_fixed = y;
+    return row;
+  }
+
   if ((type != OSQP_PENALTY_NONE) && (s != 0.0)) {
     OSQPFloat bound = s > 0.0 ? u : l;
     OSQPFloat sign  = s > 0.0 ? 1.0 : -1.0;
@@ -151,7 +163,8 @@ static OSQPInt form_Ared(OSQPSolver* solver){
    *    A soft row sitting on a smooth piece of its penalty is -2/+2: it also
    *    enters Ared, but with a finite diagonal 1/kappa in the (2,2) block
    *    rather than the regularizer, since z moves with y there.  A soft row on
-   *    a linear piece leaves Ared with its dual pinned in y_fixed.
+   *    a linear piece leaves Ared with its dual pinned in y_fixed, as does
+   *    every row of a penalty group, which is not polished at all.
    *
    *    Ared is formed by selecting all of the rows flagged nonzero.
    */

@@ -52,6 +52,17 @@ OSQPInt penalty_default_type(const OSQPSolver* solver);
 # if OSQP_EMBEDDED_MODE != 1
 
 /**
+ * Make the constraint scaling E constant on every penalty group, by replacing
+ * it with the group's geometric mean and pushing the correction into A.
+ *
+ * A group penalty alpha*||s_G|| only survives the scaling when E is constant
+ * on G, so this runs at the end of the Ruiz iteration, before E is used to
+ * scale l, u and the penalty weights. No-op without a group penalty.
+ * @param  solver Solver
+ */
+void penalty_equalize_scaling(OSQPSolver* solver);
+
+/**
  * Scale/unscale the penalty parameters in place, like l and u.
  * Called from scale_data/unscale_data; no-ops if no penalty is allocated.
  * @param  solver Solver

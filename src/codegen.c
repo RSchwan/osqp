@@ -338,6 +338,15 @@ static OSQPInt write_penalty(FILE*                  f,
     GENERATE_ERROR(write_OSQPVectori(f, pen->type, name))
   }
 
+  /* Group membership is fixed at setup, so it emits as plain static data and
+     the generated solver has nothing to rebuild */
+  if (pen->ngroups) {
+    sprintf(name, "%sdata_penalty_group_ptr", prefix);
+    GENERATE_ERROR(write_OSQPVectori(f, pen->group_ptr, name))
+    sprintf(name, "%sdata_penalty_group_rows", prefix);
+    GENERATE_ERROR(write_OSQPVectori(f, pen->group_rows, name))
+  }
+
   fprintf(f, "OSQPPenaltyData %sdata_penalty = {\n", prefix);
   fprintf(f, "  %" OSQP_INT_FMT ",\n", pen->uniform);
   fprintf(f, "  %" OSQP_INT_FMT ",\n", pen->default_penalty_type);
@@ -346,6 +355,16 @@ static OSQPInt write_penalty(FILE*                  f,
   fprintf(f, "  &%sdata_penalty_alpha1,\n", prefix);
   fprintf(f, "  &%sdata_penalty_alpha2,\n", prefix);
   fprintf(f, "  &%sdata_penalty_delta,\n", prefix);
+  fprintf(f, "  %" OSQP_INT_FMT ",\n", pen->ngroups);
+  fprintf(f, "  %" OSQP_INT_FMT ",\n", pen->ngrouped);
+  if (pen->ngroups) {
+    fprintf(f, "  &%sdata_penalty_group_ptr,\n", prefix);
+    fprintf(f, "  &%sdata_penalty_group_rows,\n", prefix);
+  }
+  else {
+    fprintf(f, "  OSQP_NULL,\n");
+    fprintf(f, "  OSQP_NULL,\n");
+  }
   fprintf(f, "};\n\n");
 
   return exitflag;
@@ -595,6 +614,12 @@ static OSQPInt write_workspace(FILE*             f,
     GENERATE_ERROR(write_OSQPVectorf(f, work->penalty_val_tmp, name))
   }
 
+  /* The group prox stages its residuals and sorts their magnitudes here */
+  if (work->data->penalty && work->data->penalty->ngroups) {
+    sprintf(name, "%swork_penalty_sort_tmp", prefix);
+    GENERATE_ERROR(write_OSQPVectorf(f, work->penalty_sort_tmp, name))
+  }
+
   fprintf(f, "/* Define the workspace structure */\n");
   fprintf(f, "OSQPWorkspace %swork = {\n", prefix);
   fprintf(f, "  &%sdata,\n", prefix);
@@ -603,20 +628,24 @@ static OSQPInt write_workspace(FILE*             f,
   if (solver->settings->rho_is_vec) {
     fprintf(f, "  &%swork_rho_vec,\n", prefix);
     fprintf(f, "  &%swork_rho_inv_vec,\n", prefix);
-    if (work->data->penalty)
-      fprintf(f, "  OSQP_NULL, OSQP_NULL, &%swork_penalty_val_tmp,\n", prefix); /* penalty workspace */
+    if (work->data->penalty && work->data->penalty->ngroups)
+      fprintf(f, "  OSQP_NULL, OSQP_NULL, &%swork_penalty_val_tmp, &%swork_penalty_sort_tmp,\n", prefix, prefix); /* penalty workspace */
+    else if (work->data->penalty)
+      fprintf(f, "  OSQP_NULL, OSQP_NULL, &%swork_penalty_val_tmp, OSQP_NULL,\n", prefix); /* penalty workspace */
     else
-      fprintf(f, "  OSQP_NULL, OSQP_NULL, OSQP_NULL,\n"); /* penalty workspace */
+      fprintf(f, "  OSQP_NULL, OSQP_NULL, OSQP_NULL, OSQP_NULL,\n"); /* penalty workspace */
     if (embedded > 1) {
       fprintf(f, "  &%swork_constr_type,\n", prefix);
     }
   } else {
     fprintf(f, "  OSQP_NULL,\n");    /* work_rho_vec */
     fprintf(f, "  OSQP_NULL,\n");    /* work_rho_inv_vec */
-    if (work->data->penalty)
-      fprintf(f, "  OSQP_NULL, OSQP_NULL, &%swork_penalty_val_tmp,\n", prefix); /* penalty workspace */
+    if (work->data->penalty && work->data->penalty->ngroups)
+      fprintf(f, "  OSQP_NULL, OSQP_NULL, &%swork_penalty_val_tmp, &%swork_penalty_sort_tmp,\n", prefix, prefix); /* penalty workspace */
+    else if (work->data->penalty)
+      fprintf(f, "  OSQP_NULL, OSQP_NULL, &%swork_penalty_val_tmp, OSQP_NULL,\n", prefix); /* penalty workspace */
     else
-      fprintf(f, "  OSQP_NULL, OSQP_NULL, OSQP_NULL,\n"); /* penalty workspace */
+      fprintf(f, "  OSQP_NULL, OSQP_NULL, OSQP_NULL, OSQP_NULL,\n"); /* penalty workspace */
     if (embedded > 1) {
       fprintf(f, "  OSQP_NULL,\n");  /* work_constr_type */
     }

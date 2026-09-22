@@ -84,6 +84,22 @@ typedef struct {
   OSQPVectorf* alpha1;               ///< penalty parameter, size m
   OSQPVectorf* alpha2;               ///< penalty parameter, size m
   OSQPVectorf* delta;                ///< penalty parameter, size m
+
+  /**
+   * @name Non-separable penalty groups, in CSR form over the rows
+   *
+   * Group g owns the rows group_rows[group_ptr[g] .. group_ptr[g+1]-1]. The
+   * group's type and weight are read from any of its rows, which validation
+   * keeps in agreement. Membership is fixed at setup; ngroups is 0 and the
+   * vectors are OSQP_NULL when no group penalty is used.
+   * @{
+   */
+  OSQPInt      ngroups;              ///< number of penalty groups
+  OSQPInt      ngrouped;             ///< total grouped rows, i.e. group_ptr[ngroups]
+  OSQPVectori* group_ptr;            ///< start of each group in group_rows, size ngroups+1
+  OSQPVectori* group_rows;           ///< row indices ordered by group, size ngrouped
+
+  /** @} */
 } OSQPPenaltyData;
 
 /**
@@ -140,6 +156,7 @@ struct OSQPWorkspace_ {
   OSQPVectori* penalty_type_tmp;     ///< staging for candidate per-row types, size m
   OSQPVectori* penalty_flags_tmp;    ///< one-element integer scratch for backend reductions
   OSQPVectorf* penalty_val_tmp;      ///< one-element float scratch for backend reductions
+  OSQPVectorf* penalty_sort_tmp;     ///< group prox staging, size 2*ngrouped (residuals, then sortable magnitudes)
 
 # if OSQP_EMBEDDED_MODE != 1
   OSQPVectori* constr_type; ///< Type of constraints: loose (-1), equality (1), inequality (0)

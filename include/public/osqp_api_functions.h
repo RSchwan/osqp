@@ -373,12 +373,25 @@ OSQP_API OSQPInt osqp_update_data_vec(OSQPSolver*      solver,
  * The only penalty function that allocates. Weights are given in the units of
  * the original problem and must be finite; a hard row is OSQP_PENALTY_NONE.
  * See osqp_penalty_type for the weights each type uses.
+ *
+ * The non-separable types OSQP_PENALTY_NORM2 and OSQP_PENALTY_NORMINF penalize
+ * a norm of the slacks of a whole group of rows, ||xi_G||, rather than each row
+ * on its own. group_id says which group each row joins, OSQP_NO_GROUP for a row
+ * that pools with nothing. A row carrying one of those types must be in a
+ * group and no other row may be, every row of a group must agree on its type
+ * and on alpha1, and a group must be non-empty; the call is rejected
+ * otherwise. Group membership is fixed here for the lifetime of the solver,
+ * while the types and weights stay updatable through the calls below.
+ *
  * @param  solver       Solver
  * @param  default_type Penalty type used when type is NULL
  * @param  type         Per-row penalty types (length m), NULL to use default_type
  * @param  alpha1       Per-row alpha1 (length m), required
  * @param  alpha2       Per-row alpha2 (length m), required
  * @param  delta        Per-row delta (length m), required
+ * @param  ngroups      Number of penalty groups, 0 for none
+ * @param  group_id     Per-row group (length m), OSQP_NO_GROUP where ungrouped;
+ *                      required when ngroups > 0, otherwise ignored
  * @return              Exitflag for errors (0 if no errors)
  */
 OSQP_API OSQPInt osqp_setup_penalty(OSQPSolver*      solver,
@@ -386,7 +399,9 @@ OSQP_API OSQPInt osqp_setup_penalty(OSQPSolver*      solver,
                                     const OSQPInt*   type,
                                     const OSQPFloat* alpha1,
                                     const OSQPFloat* alpha2,
-                                    const OSQPFloat* delta);
+                                    const OSQPFloat* delta,
+                                    OSQPInt          ngroups,
+                                    const OSQPInt*   group_id);
 
 /**
  * Change which constraint rows are soft, and with which penalty

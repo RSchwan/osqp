@@ -497,6 +497,131 @@ OSQPFloat OSQPVectorf_penalty_conj_value(const OSQPVectorf* y,
   return res;
 }
 
+/*******************************************************************************
+ * Non-separable penalty groups                                                *
+ *                                                                             *
+ * One block per group, entirely on the device: see cuda_lin_alg.cu.           *
+ *******************************************************************************/
+
+void OSQPVectorf_group_prox_penalty(OSQPVectorf*       z,
+                                    const OSQPVectorf* v,
+                                    const OSQPVectorf* l,
+                                    const OSQPVectorf* u,
+                                    OSQPFloat          rho,
+                                    const OSQPVectorf* alpha1,
+                                    const OSQPVectori* type,
+                                    OSQPInt            default_type,
+                                    const OSQPVectori* group_ptr,
+                                    const OSQPVectori* group_rows,
+                                    OSQPInt            ngroups,
+                                    OSQPVectorf*       sort_tmp) {
+
+  cuda_vec_group_prox_penalty(z->d_val, v->d_val, l->d_val, u->d_val, rho,
+                              alpha1->d_val,
+                              type ? type->d_val : (const OSQPInt*)OSQP_NULL,
+                              default_type,
+                              group_ptr->d_val, group_rows->d_val, ngroups,
+                              sort_tmp->d_val);
+}
+
+OSQPFloat OSQPVectorf_group_penalty_value(const OSQPVectorf* z,
+                                          const OSQPVectorf* l,
+                                          const OSQPVectorf* u,
+                                          const OSQPVectorf* alpha1,
+                                          const OSQPVectori* type,
+                                          OSQPInt            default_type,
+                                          const OSQPVectori* group_ptr,
+                                          const OSQPVectori* group_rows,
+                                          OSQPInt            ngroups,
+                                          OSQPVectorf*       scratch) {
+
+  OSQPFloat res;
+
+  cuda_vec_group_penalty_value(z->d_val, l->d_val, u->d_val, alpha1->d_val,
+                               type ? type->d_val : (const OSQPInt*)OSQP_NULL,
+                               default_type,
+                               group_ptr->d_val, group_rows->d_val, ngroups,
+                               &res, scratch->d_val);
+
+  return res;
+}
+
+OSQPFloat OSQPVectorf_group_penalty_reccone_rate(const OSQPVectorf* w,
+                                                 const OSQPVectorf* l,
+                                                 const OSQPVectorf* u,
+                                                 const OSQPVectorf* alpha1,
+                                                 const OSQPVectori* type,
+                                                 OSQPInt            default_type,
+                                                 const OSQPVectori* group_ptr,
+                                                 const OSQPVectori* group_rows,
+                                                 OSQPInt            ngroups,
+                                                 OSQPFloat          infval,
+                                                 OSQPVectorf*       scratch) {
+
+  OSQPFloat res;
+
+  cuda_vec_group_penalty_reccone_rate(w->d_val, l->d_val, u->d_val, alpha1->d_val,
+                                      type ? type->d_val : (const OSQPInt*)OSQP_NULL,
+                                      default_type,
+                                      group_ptr->d_val, group_rows->d_val, ngroups,
+                                      infval, &res, scratch->d_val);
+
+  return res;
+}
+
+OSQPFloat OSQPVectorf_group_penalty_conj_value(const OSQPVectorf* y,
+                                               const OSQPVectorf* alpha1,
+                                               const OSQPVectori* type,
+                                               OSQPInt            default_type,
+                                               const OSQPVectori* group_ptr,
+                                               const OSQPVectori* group_rows,
+                                               OSQPInt            ngroups,
+                                               OSQPVectorf*       scratch) {
+
+  OSQPFloat res;
+
+  cuda_vec_group_penalty_conj_value(y->d_val, alpha1->d_val,
+                                    type ? type->d_val : (const OSQPInt*)OSQP_NULL,
+                                    default_type,
+                                    group_ptr->d_val, group_rows->d_val, ngroups,
+                                    &res, scratch->d_val);
+
+  return res;
+}
+
+void OSQPVectorf_group_equalize_scaling(OSQPVectorf*       corr,
+                                        const OSQPVectorf* E,
+                                        const OSQPVectori* group_ptr,
+                                        const OSQPVectori* group_rows,
+                                        OSQPInt            ngroups) {
+
+  cuda_vec_group_equalize_scaling(corr->d_val, E->d_val, corr->length,
+                                  group_ptr->d_val, group_rows->d_val, ngroups);
+}
+
+OSQPInt OSQPVectorf_penalty_groups_check(const OSQPVectorf* alpha1,
+                                         const OSQPVectorf* alpha2,
+                                         const OSQPVectorf* delta,
+                                         const OSQPVectori* type,
+                                         OSQPInt            default_type,
+                                         const OSQPVectori* group_ptr,
+                                         const OSQPVectori* group_rows,
+                                         OSQPInt            ngroups,
+                                         OSQPVectori*       scratch) {
+
+  OSQPInt res;
+
+  cuda_vec_group_penalty_check(alpha1->d_val, alpha2->d_val, delta->d_val,
+                               type ? type->d_val : (const OSQPInt*)OSQP_NULL,
+                               default_type, alpha1->length,
+                               ngroups ? group_ptr->d_val  : (const OSQPInt*)OSQP_NULL,
+                               ngroups ? group_rows->d_val : (const OSQPInt*)OSQP_NULL,
+                               ngroups, ngroups ? group_rows->length : 0,
+                               &res, scratch->d_val);
+
+  return res;
+}
+
 void OSQPVectorf_project_polar_reccone(OSQPVectorf*       y,
                                        const OSQPVectorf* l,
                                        const OSQPVectorf* u,

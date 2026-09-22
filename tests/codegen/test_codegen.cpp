@@ -256,7 +256,7 @@ TEST_CASE_METHOD(codegen_test_fixture, "Codegen: soft constraint data export", "
 
   exitflag = osqp_setup_penalty(solver.get(), OSQP_PENALTY_L1L2,
                                 uniform ? OSQP_NULL : type.data(),
-                                a1.data(), a2.data(), dl.data());
+                                a1.data(), a2.data(), dl.data(), 0, OSQP_NULL);
   mu_assert("Penalty setup error!", exitflag == 0);
 
   defines->embedded_mode = embedded;
@@ -268,6 +268,80 @@ TEST_CASE_METHOD(codegen_test_fixture, "Codegen: soft constraint data export", "
 
   /* NB: tests/codegen/compilation_test checks that the generated solver
      reproduces this solution; the reference values live there. */
+}
+
+TEST_CASE_METHOD(codegen_test_fixture, "Codegen: penalty group data export", "[codegen],[penalty],[group]")
+{
+  OSQPInt exitflag;
+
+  OSQPCodegenDefines_ptr defines{OSQPCodegenDefines_new()};
+
+  settings->polishing = 1;
+  settings->scaling   = 1;
+
+  OSQPInt     embedded;
+  std::string dir;
+
+  std::tie( embedded, dir ) =
+    GENERATE( table<OSQPInt, std::string>(
+        { std::make_tuple( 1, CODEGEN1_DIR ),
+          std::make_tuple( 2, CODEGEN2_DIR ) } ) );
+
+  char name[100];
+  snprintf(name, 100, "data_penalty_group_embedded_%d_", (int)embedded);
+
+  CAPTURE(embedded);
+
+  /* Tighten the rows that will be grouped, so their slack is genuinely nonzero
+     at the solution: a group that never binds would let a codegen bug that
+     drops it pass unnoticed */
+  for (OSQPInt i = 0; i < data->m; i++) {
+    if (i % 3 == 0) continue;
+    data->l[i] = -0.01;
+    data->u[i] =  0.01;
+  }
+
+  exitflag = osqp_setup(&tmpSolver, data->P, data->q,
+                        data->A, data->l, data->u,
+                        data->m, data->n, settings.get());
+  solver.reset(tmpSolver);
+  mu_assert("Setup error!", exitflag == 0);
+
+  /* Two groups, one per norm, over a problem that also keeps hard rows, so the
+     generated data exercises the CSR emission and the mixed-type path */
+  std::vector<OSQPInt>   type(data->m, OSQP_PENALTY_NONE);
+  std::vector<OSQPInt>   gid(data->m, OSQP_NO_GROUP);
+  std::vector<OSQPFloat> a1(data->m, 0.0), a2(data->m, 0.0), dl(data->m, 0.0);
+
+  for (OSQPInt i = 0; i < data->m; i++) {
+    if (i % 3 == 0) continue;                 /* left hard */
+
+    OSQPInt g = (i % 3 == 1) ? 0 : 1;
+
+    gid[i]  = g;
+    type[i] = g ? OSQP_PENALTY_NORMINF : OSQP_PENALTY_NORM2;
+    a1[i]   = g ? 0.4 : 0.2;
+  }
+
+  exitflag = osqp_setup_penalty(solver.get(), OSQP_PENALTY_NONE, type.data(),
+                                a1.data(), a2.data(), dl.data(),
+                                2, gid.data());
+  mu_assert("Penalty group setup error!", exitflag == 0);
+
+  defines->embedded_mode = embedded;
+
+  exitflag = osqp_codegen(solver.get(), dir.c_str(), name, defines.get());
+
+  mu_assert("Penalty group codegen should have worked!",
+            exitflag == OSQP_NO_ERROR);
+
+  /* NB: tests/codegen/compilation_test checks that the generated solver
+     reproduces this solution; the reference values live there. */
+  exitflag = osqp_solve(solver.get());
+  mu_assert("Penalty group solve error!", exitflag == 0);
+
+  /* Reference values for the generated solver live in
+     tests/codegen/compilation_test/embedded_mode{1,2}.c */
 }
 
 TEST_CASE_METHOD(codegen_test_fixture, "Codegen: defines defaults", "[codegen],[defaults]")

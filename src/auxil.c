@@ -618,6 +618,20 @@ OSQPInt is_dual_infeasible(OSQPSolver* solver,
                                              eps_dual_inf * OSQPVectorf_norm_inf(work->delta_x),
                                              work->penalty_val_tmp);
 
+          /* Grouped rows are skipped above, their charge being a norm over the
+             whole group. Both group norms are positively homogeneous, so they
+             only ever add a finite rate, never block. */
+          if ((rate < OSQP_INFTY) && pen->ngroups)
+            rate += OSQPVectorf_group_penalty_reccone_rate(work->Adelta_x,
+                                                           work->data->l, work->data->u,
+                                                           pen->alpha1,
+                                                           penalty_row_types(solver),
+                                                           penalty_default_type(solver),
+                                                           pen->group_ptr, pen->group_rows,
+                                                           pen->ngroups,
+                                                           OSQP_INFTY * OSQP_MIN_SCALING,
+                                                           work->penalty_val_tmp);
+
           if (qtdx + rate >= 0.0) return 0;
 
           return 1;

@@ -64,7 +64,7 @@ public:
     std::vector<OSQPFloat> a1(data->m, 1.0), a2(data->m, 1.0), d(data->m, 1.0);
 
     return osqp_setup_penalty(solver.get(), default_type, type,
-                              a1.data(), a2.data(), d.data());
+                              a1.data(), a2.data(), d.data(), 0, OSQP_NULL);
   }
 };
 
@@ -96,13 +96,13 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: setup requires weights", "[pena
 
   mu_assert("Penalty: setup accepted a missing alpha1",
             osqp_setup_penalty(solver.get(), OSQP_PENALTY_L1L2, OSQP_NULL,
-                               OSQP_NULL, w.data(), w.data()) != 0);
+                               OSQP_NULL, w.data(), w.data(), 0, OSQP_NULL) != 0);
   mu_assert("Penalty: setup accepted a missing alpha2",
             osqp_setup_penalty(solver.get(), OSQP_PENALTY_L1L2, OSQP_NULL,
-                               w.data(), OSQP_NULL, w.data()) != 0);
+                               w.data(), OSQP_NULL, w.data(), 0, OSQP_NULL) != 0);
   mu_assert("Penalty: setup accepted a missing delta",
             osqp_setup_penalty(solver.get(), OSQP_PENALTY_HUBER, OSQP_NULL,
-                               w.data(), w.data(), OSQP_NULL) != 0);
+                               w.data(), w.data(), OSQP_NULL, 0, OSQP_NULL) != 0);
 
   mu_assert("Penalty: allocated by a rejected call", penalty() == OSQP_NULL);
 }
@@ -337,7 +337,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: a type change keeps the weights
   setup_solver();
 
   REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_NONE, types,
-                             alpha1, alpha2, alpha1) == 0);
+                             alpha1, alpha2, alpha1, 0, OSQP_NULL) == 0);
 
   // Change the type of rows 1 and 2 only. The stored weights are valid for the
   // new types, so the call succeeds and leaves every weight untouched.
@@ -499,7 +499,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: the conjugate admits a boundary
     std::fill(d.begin(), d.end(), 1.0);
 
     REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_L1L2, OSQP_NULL,
-                               a1.data(), a2.data(), d.data()) == 0);
+                               a1.data(), a2.data(), d.data(), 0, OSQP_NULL) == 0);
 
     REQUIRE(conj_at(boundary) == Approx(0.0).margin(TESTS_TOL));
     REQUIRE(conj_at(std::nextafter(boundary, (OSQPFloat)2.0)) == Approx(0.0).margin(TESTS_TOL));
@@ -518,7 +518,7 @@ TEST_CASE_METHOD(penalty_test_fixture, "Penalty: the conjugate admits a boundary
     std::fill(d.begin(), d.end(), delta);
 
     REQUIRE(osqp_setup_penalty(solver.get(), OSQP_PENALTY_HUBER, OSQP_NULL,
-                               a1.data(), a2.data(), d.data()) == 0);
+                               a1.data(), a2.data(), d.data(), 0, OSQP_NULL) == 0);
 
     const OSQPFloat val = data->m * 0.5 * alpha1 * delta * delta;
 

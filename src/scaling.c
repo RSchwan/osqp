@@ -151,6 +151,10 @@ OSQPInt scale_data(OSQPSolver* solver) {
   }
 
 
+  // Make E constant on every penalty group, so that the group norms survive
+  // the scaling. Must precede Einv and everything else that consumes E.
+  penalty_equalize_scaling(solver);
+
   // Store cinv, Dinv, Einv
   work->scaling->cinv = 1. / work->scaling->c;
   OSQPVectorf_ew_reciprocal(work->scaling->Dinv, work->scaling->D);

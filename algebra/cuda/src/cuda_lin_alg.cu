@@ -407,6 +407,408 @@ __global__ void vec_prod_neg_kernel(const OSQPFloat* a,
   atomicAdd(res, res_kernel);
 }
 
+/*******************************************************************************
+ * Non-separable penalty groups                                                *
+ *                                                                             *
+ * One block per group. A group's work is a handful of block-wide reductions    *
+ * over its rows, so the whole pass stays on the device and the group vectors   *
+ * are never staged on the host.                                                *
+ *******************************************************************************/
+
+/* Threads per group block. A power of two, so the reduction tree below is a
+   plain halving, and well under THREADS_PER_BLOCK because a block is spent per
+   group rather than per element: groups are typically small. */
+#define GROUP_THREADS (256)
+
+/* Block-wide sum, broadcast to every thread. s is shared scratch of
+   GROUP_THREADS floats, reused across calls within a kernel; the leading
+   barrier is what makes that reuse safe. */
+__device__ static OSQPFloat group_reduce_sum(OSQPFloat* s,
+                                             OSQPFloat  val) {
+
+  OSQPInt tid = threadIdx.x;
+
+  __syncthreads();
+  s[tid] = val;
+  __syncthreads();
+
+  for (OSQPInt off = GROUP_THREADS / 2; off > 0; off >>= 1) {
+    if (tid < off) s[tid] += s[tid + off];
+    __syncthreads();
+  }
+
+  return s[0];
+}
+
+/* Block-wide maximum, broadcast to every thread */
+__device__ static OSQPFloat group_reduce_max(OSQPFloat* s,
+                                             OSQPFloat  val) {
+
+  OSQPInt tid = threadIdx.x;
+
+  __syncthreads();
+  s[tid] = val;
+  __syncthreads();
+
+  for (OSQPInt off = GROUP_THREADS / 2; off > 0; off >>= 1) {
+    if (tid < off) s[tid] = c_max(s[tid], s[tid + off]);
+    __syncthreads();
+  }
+
+  return s[0];
+}
+
+/* Type of a group, which validation keeps equal across its rows */
+__device__ static OSQPInt group_type_of(const OSQPInt* type,
+                                        OSQPInt        default_type,
+                                        const OSQPInt* rows,
+                                        OSQPInt        start) {
+
+  return type ? type[rows[start]] : default_type;
+}
+
+/* The threshold lambda > 0 solving sum_i (|r_i| - lambda)_+ = tau.
+ *
+ * Michelot's algorithm rather than the host's sort: starting from lambda = 0,
+ * each sweep recomputes lambda from the rows still above it, which is exactly
+ * the closed form once the active set stops shrinking. It is exact and
+ * finitely terminating like the sorted scan, but its sweeps are block-wide
+ * reductions, which is what the device has cheaply and a sort is not. The
+ * caller guarantees sum_i |r_i| > tau, so lambda > 0 exists.
+ *
+ * Every thread reduces the same values and so leaves with the same lambda and
+ * the same loop decision; the loop itself never diverges.
+ */
+__device__ static OSQPFloat group_l1ball_threshold(OSQPFloat*       s,
+                                                   const OSQPFloat* res,
+                                                   OSQPInt          start,
+                                                   OSQPInt          stop,
+                                                   OSQPFloat        tau) {
+
+  OSQPInt   n      = stop - start;
+  OSQPFloat lambda = 0.0;
+  OSQPInt   sweep;
+
+  /* The active set strictly shrinks on every sweep that moves lambda, so n
+     sweeps is a hard bound and the counter is a guard, not the exit */
+  for (sweep = 0; sweep <= n; sweep++) {
+    OSQPFloat sum = 0.0;
+    OSQPFloat cnt = 0.0;
+    OSQPFloat cand;
+
+    for (OSQPInt k = start + threadIdx.x; k < stop; k += GROUP_THREADS) {
+      OSQPFloat a = c_absval(res[k]);
+
+      if (a > lambda) { sum += a; cnt += 1.0; }
+    }
+
+    sum = group_reduce_sum(s, sum);
+    cnt = group_reduce_sum(s, cnt);
+
+    if (cnt <= 0.0) break;
+
+    cand = (sum - tau) / cnt;
+
+    /* lambda only ever increases; anything else is the fixed point */
+    if (!(cand > lambda)) break;
+
+    lambda = cand;
+  }
+
+  return lambda;
+}
+
+__global__ void group_prox_penalty_kernel(      OSQPFloat* z,
+                                          const OSQPFloat* v,
+                                          const OSQPFloat* l,
+                                          const OSQPFloat* u,
+                                                OSQPFloat  rho,
+                                          const OSQPFloat* a1,
+                                          const OSQPInt*   type,
+                                          const OSQPInt*   gp,
+                                          const OSQPInt*   rows,
+                                                OSQPInt    default_type,
+                                                OSQPFloat* res) {
+
+  __shared__ OSQPFloat s[GROUP_THREADS];
+
+  OSQPInt   g     = blockIdx.x;
+  OSQPInt   start = gp[g];
+  OSQPInt   stop  = gp[g + 1];
+  OSQPFloat tau   = a1[rows[start]] / rho;
+
+  /* Stage the residual r = v - Proj_[l,u](v) and leave the projection in z, so
+     that the prox below only has to add its slack. Each thread reads v and
+     writes z at the same index, so z may alias v. */
+  for (OSQPInt k = start + threadIdx.x; k < stop; k += GROUP_THREADS) {
+    OSQPInt   i    = rows[k];
+    OSQPFloat vbar = c_min(c_max(v[i], l[i]), u[i]);
+
+    res[k] = v[i] - vbar;
+    z[i]   = vbar;
+  }
+
+  __syncthreads();
+
+  /* The group type is the same for every thread of the block, so the switch
+     below never diverges and the barriers inside the reductions are safe */
+  switch (group_type_of(type, default_type, rows, start)) {
+    case OSQP_PENALTY_NORM2: {
+      /* prox = (1 - tau/||r||_2)_+ * r */
+      OSQPFloat acc   = 0.0;
+      OSQPFloat nrm;
+      OSQPFloat scale = 0.0;
+
+      for (OSQPInt k = start + threadIdx.x; k < stop; k += GROUP_THREADS)
+        acc += res[k] * res[k];
+
+      nrm = c_sqrt(group_reduce_sum(s, acc));
+
+      if (nrm > tau) scale = 1.0 - tau / nrm;
+
+      for (OSQPInt k = start + threadIdx.x; k < stop; k += GROUP_THREADS)
+        z[rows[k]] += scale * res[k];
+      break;
+    }
+
+    case OSQP_PENALTY_NORMINF: {
+      /* prox = r - Proj_{||.||_1 <= tau}(r) by Moreau, which is zero inside
+         the ball and sign(r_i)*min(|r_i|, lambda) outside it */
+      OSQPFloat acc = 0.0;
+      OSQPFloat sum;
+      OSQPFloat lambda;
+
+      for (OSQPInt k = start + threadIdx.x; k < stop; k += GROUP_THREADS)
+        acc += c_absval(res[k]);
+
+      sum = group_reduce_sum(s, acc);
+
+      /* Inside the dual ball the group's whole slack is driven to zero, and z
+         keeps the projection already written above */
+      if (sum <= tau) break;
+
+      lambda = group_l1ball_threshold(s, res, start, stop, tau);
+
+      for (OSQPInt k = start + threadIdx.x; k < stop; k += GROUP_THREADS) {
+        OSQPFloat r = res[k];
+        OSQPFloat t = c_min(c_absval(r), lambda);
+
+        z[rows[k]] += (r > 0.0 ? t : -t);
+      }
+      break;
+    }
+
+    default:
+      break;   /* Not a group type; validation rules this out */
+  }
+}
+
+__global__ void group_penalty_value_kernel(const OSQPFloat* z,
+                                           const OSQPFloat* l,
+                                           const OSQPFloat* u,
+                                           const OSQPFloat* a1,
+                                           const OSQPInt*   type,
+                                           const OSQPInt*   gp,
+                                           const OSQPInt*   rows,
+                                                 OSQPInt    default_type,
+                                                 OSQPFloat* res) {
+
+  __shared__ OSQPFloat s[GROUP_THREADS];
+
+  OSQPInt   g     = blockIdx.x;
+  OSQPInt   start = gp[g];
+  OSQPInt   stop  = gp[g + 1];
+  OSQPInt   gt    = group_type_of(type, default_type, rows, start);
+  OSQPFloat acc   = 0.0;
+  OSQPFloat val;
+
+  for (OSQPInt k = start + threadIdx.x; k < stop; k += GROUP_THREADS) {
+    OSQPInt   i    = rows[k];
+    OSQPFloat zbar = c_min(c_max(z[i], l[i]), u[i]);
+    OSQPFloat sl   = z[i] - zbar;
+
+    if (gt == OSQP_PENALTY_NORM2) acc += sl * sl;
+    else                          acc  = c_max(acc, c_absval(sl));
+  }
+
+  val = (gt == OSQP_PENALTY_NORM2) ? c_sqrt(group_reduce_sum(s, acc))
+                                   : group_reduce_max(s, acc);
+
+  if (threadIdx.x == 0) atomicAdd(res, a1[rows[start]] * val);
+}
+
+__global__ void group_penalty_reccone_rate_kernel(const OSQPFloat* w,
+                                                  const OSQPFloat* l,
+                                                  const OSQPFloat* u,
+                                                  const OSQPFloat* a1,
+                                                  const OSQPInt*   type,
+                                                  const OSQPInt*   gp,
+                                                  const OSQPInt*   rows,
+                                                        OSQPInt    default_type,
+                                                        OSQPFloat  infval,
+                                                        OSQPFloat* res) {
+
+  __shared__ OSQPFloat s[GROUP_THREADS];
+
+  OSQPInt   g     = blockIdx.x;
+  OSQPInt   start = gp[g];
+  OSQPInt   stop  = gp[g + 1];
+  OSQPInt   gt    = group_type_of(type, default_type, rows, start);
+  OSQPFloat acc   = 0.0;
+  OSQPFloat val;
+
+  for (OSQPInt k = start + threadIdx.x; k < stop; k += GROUP_THREADS) {
+    OSQPInt   i = rows[k];
+    OSQPFloat dist;
+
+    if ((u[i] < +infval) && (w[i] > 0.0))      dist = w[i];
+    else if ((l[i] > -infval) && (w[i] < 0.0)) dist = -w[i];
+    else                                       continue;
+
+    if (gt == OSQP_PENALTY_NORM2) acc += dist * dist;
+    else                          acc  = c_max(acc, dist);
+  }
+
+  val = (gt == OSQP_PENALTY_NORM2) ? c_sqrt(group_reduce_sum(s, acc))
+                                   : group_reduce_max(s, acc);
+
+  if (threadIdx.x == 0) atomicAdd(res, a1[rows[start]] * val);
+}
+
+__global__ void group_penalty_conj_value_kernel(const OSQPFloat* y,
+                                                const OSQPFloat* a1,
+                                                const OSQPInt*   type,
+                                                const OSQPInt*   gp,
+                                                const OSQPInt*   rows,
+                                                      OSQPInt    default_type,
+                                                      OSQPFloat* res) {
+
+  __shared__ OSQPFloat s[GROUP_THREADS];
+
+  OSQPInt   g     = blockIdx.x;
+  OSQPInt   start = gp[g];
+  OSQPInt   stop  = gp[g + 1];
+  OSQPInt   gt    = group_type_of(type, default_type, rows, start);
+  OSQPFloat lim   = a1[rows[start]];
+  OSQPFloat acc   = 0.0;
+  OSQPFloat nrm;
+
+  /* A norm's conjugate is the indicator of the dual-norm ball: ||.||_2 for
+     NORM2 and ||.||_1 for NORMINF */
+  for (OSQPInt k = start + threadIdx.x; k < stop; k += GROUP_THREADS) {
+    OSQPFloat yi = y[rows[k]];
+
+    if (gt == OSQP_PENALTY_NORM2) acc += yi * yi;
+    else                          acc += c_absval(yi);
+  }
+
+  nrm = group_reduce_sum(s, acc);
+
+  if (gt == OSQP_PENALTY_NORM2) nrm = c_sqrt(nrm);
+
+  if (threadIdx.x == 0) {
+    if (nrm > lim + OSQP_PENALTY_CONJ_TOL * (1.0 + lim)) atomicAdd(res, OSQP_INFTY);
+  }
+}
+
+__global__ void group_equalize_scaling_kernel(      OSQPFloat* corr,
+                                              const OSQPFloat* E,
+                                              const OSQPInt*   gp,
+                                              const OSQPInt*   rows) {
+
+  __shared__ OSQPFloat s[GROUP_THREADS];
+
+  OSQPInt   g     = blockIdx.x;
+  OSQPInt   start = gp[g];
+  OSQPInt   stop  = gp[g + 1];
+  OSQPFloat acc   = 0.0;
+  OSQPFloat mean;
+
+  /* Averaged in the log so that a long group cannot overflow the product.
+     E is strictly positive, being a Ruiz factor passed through
+     limit_scaling_vector. */
+  for (OSQPInt k = start + threadIdx.x; k < stop; k += GROUP_THREADS)
+    acc += c_log(E[rows[k]]);
+
+  mean = c_exp(group_reduce_sum(s, acc) / (OSQPFloat)(stop - start));
+
+  for (OSQPInt k = start + threadIdx.x; k < stop; k += GROUP_THREADS)
+    corr[rows[k]] = mean / E[rows[k]];
+}
+
+/* Count the rows declaring a group type. Comparing this against the rows the
+   groups actually contain, which the caller knows as ngrouped, is what rules
+   out a group type outside any group, without needing the inverse of the
+   membership map.
+
+   NB: the counter is unsigned long long rather than OSQPInt because atomicAdd
+   has no overload for a signed 64-bit integer, which is what OSQPInt is under
+   OSQP_USE_LONG. */
+__global__ void group_type_count_kernel(const OSQPInt*      type,
+                                              OSQPInt       default_type,
+                                              unsigned long long* count,
+                                              OSQPInt       n) {
+
+  OSQPInt idx = threadIdx.x + blockDim.x * blockIdx.x;
+  OSQPInt grid_size = blockDim.x * gridDim.x;
+
+  unsigned long long local = 0;
+
+  for (OSQPInt i = idx; i < n; i += grid_size) {
+    OSQPInt t = type ? type[i] : default_type;
+
+    if ((t == OSQP_PENALTY_NORM2) || (t == OSQP_PENALTY_NORMINF)) local++;
+  }
+
+  atomicAdd(count, local);
+}
+
+__global__ void group_penalty_check_kernel(const OSQPFloat* a1,
+                                           const OSQPFloat* a2,
+                                           const OSQPFloat* d,
+                                           const OSQPInt*   type,
+                                           const OSQPInt*   gp,
+                                           const OSQPInt*   rows,
+                                                 OSQPInt    default_type,
+                                                 OSQPInt*   flags) {
+
+  OSQPInt   g     = blockIdx.x;
+  OSQPInt   start = gp[g];
+  OSQPInt   stop  = gp[g + 1];
+  OSQPInt   gt;
+  OSQPFloat gw;
+
+  /* An empty group has no type or weight to read, so nothing below applies */
+  if (start >= stop) {
+    if (threadIdx.x == 0) atomicOr(flags, OSQP_PENALTY_ERR_GROUP_TYPE);
+    return;
+  }
+
+  gt = type ? type[rows[start]] : default_type;
+  gw = a1[rows[start]];
+
+  if ((gt != OSQP_PENALTY_NORM2) && (gt != OSQP_PENALTY_NORMINF)) {
+    if (threadIdx.x == 0) atomicOr(flags, OSQP_PENALTY_ERR_GROUP_TYPE);
+    return;
+  }
+
+  /* NB: tested as !(gw > 0) rather than (gw <= 0) so that NaN is rejected */
+  if (threadIdx.x == 0) {
+    if (!(gw > 0.0) || (gw >= OSQP_INFTY)) atomicOr(flags, OSQP_PENALTY_ERR_GROUP_WEIGHT);
+  }
+
+  for (OSQPInt k = start + threadIdx.x; k < stop; k += GROUP_THREADS) {
+    OSQPInt i = rows[k];
+
+    if ((type ? type[i] : default_type) != gt) atomicOr(flags, OSQP_PENALTY_ERR_GROUP_MIXED);
+    if (a1[i] != gw)                           atomicOr(flags, OSQP_PENALTY_ERR_GROUP_MIXED);
+
+    /* Neither norm uses the remaining slots; a nonzero there is a weight the
+       caller believes is active, so it is rejected rather than ignored */
+    if ((a2[i] != 0.0) || (d[i] != 0.0)) atomicOr(flags, OSQP_PENALTY_ERR_GROUP_WEIGHT);
+  }
+}
+
 __global__ void vec_ew_prod_kernel(OSQPFloat*       c,
                                    const OSQPFloat* a,
                                    const OSQPFloat* b,
@@ -619,17 +1021,23 @@ __global__ void vec_bounds_type_kernel(OSQPInt*         iseq,
   OSQPInt grid_size = blockDim.x * gridDim.x;
 
   for(OSQPInt i = idx; i < n; i += grid_size) {
+    OSQPInt t = type ? type[i] : default_type;
+
     /* A soft row is never an equality however tight its bounds are */
-    if ((u[i] - l[i] < tol) &&
-        ((type ? type[i] : default_type) == OSQP_PENALTY_NONE)) {
+    if ((u[i] - l[i] < tol) && (t == OSQP_PENALTY_NONE)) {
       /* Equality constraints */
       if (iseq[i] != 1) {
         iseq[i] = 1;
         atomicOr(has_changed, 1);
       }
     }
-    else if ( (l[i] < -infval) && (u[i] > infval) ) {
-      /* Loose bounds */
+    else if ( (l[i] < -infval) && (u[i] > infval) &&
+              (t != OSQP_PENALTY_NORM2) && (t != OSQP_PENALTY_NORMINF) ) {
+      /* Loose bounds. A grouped row is excluded: a group prox takes a scalar
+         rho, so every row of a group must land on the same one, and keeping
+         that true after any later bound update is not something a setup-time
+         check could do. Such a row is inert anyway, its bound residual being
+         identically zero. */
       if (iseq[i] != -1) {
         iseq[i] = -1;
         atomicOr(has_changed, 1);
@@ -1071,6 +1479,165 @@ void cuda_vec_penalty_conj_value(const OSQPFloat* d_y,
 
   /* Rows outside dom phi* each contribute OSQP_INFTY to the sum */
   if (*h_res >= OSQP_INFTY) *h_res = OSQP_INFTY;
+}
+
+void cuda_vec_group_prox_penalty(      OSQPFloat* d_z,
+                                 const OSQPFloat* d_v,
+                                 const OSQPFloat* d_l,
+                                 const OSQPFloat* d_u,
+                                       OSQPFloat  rho,
+                                 const OSQPFloat* d_a1,
+                                 const OSQPInt*   d_type,
+                                       OSQPInt    default_type,
+                                 const OSQPInt*   d_gp,
+                                 const OSQPInt*   d_rows,
+                                       OSQPInt    ngroups,
+                                       OSQPFloat* d_sort_tmp) {
+
+  if (ngroups <= 0) return;
+
+  group_prox_penalty_kernel<<<ngroups, GROUP_THREADS>>>(d_z, d_v, d_l, d_u, rho,
+                                                        d_a1, d_type, d_gp, d_rows,
+                                                        default_type, d_sort_tmp);
+}
+
+void cuda_vec_group_penalty_value(const OSQPFloat* d_z,
+                                  const OSQPFloat* d_l,
+                                  const OSQPFloat* d_u,
+                                  const OSQPFloat* d_a1,
+                                  const OSQPInt*   d_type,
+                                        OSQPInt    default_type,
+                                  const OSQPInt*   d_gp,
+                                  const OSQPInt*   d_rows,
+                                        OSQPInt    ngroups,
+                                        OSQPFloat* h_res,
+                                        OSQPFloat* d_res) {
+
+  *h_res = 0.0;
+
+  if (ngroups <= 0) return;
+
+  checkCudaErrors(cudaMemcpy(d_res, h_res, sizeof(OSQPFloat), cudaMemcpyHostToDevice));
+
+  group_penalty_value_kernel<<<ngroups, GROUP_THREADS>>>(d_z, d_l, d_u, d_a1,
+                                                         d_type, d_gp, d_rows,
+                                                         default_type, d_res);
+
+  checkCudaErrors(cudaMemcpy(h_res, d_res, sizeof(OSQPFloat), cudaMemcpyDeviceToHost));
+}
+
+void cuda_vec_group_penalty_reccone_rate(const OSQPFloat* d_w,
+                                         const OSQPFloat* d_l,
+                                         const OSQPFloat* d_u,
+                                         const OSQPFloat* d_a1,
+                                         const OSQPInt*   d_type,
+                                               OSQPInt    default_type,
+                                         const OSQPInt*   d_gp,
+                                         const OSQPInt*   d_rows,
+                                               OSQPInt    ngroups,
+                                               OSQPFloat  infval,
+                                               OSQPFloat* h_res,
+                                               OSQPFloat* d_res) {
+
+  *h_res = 0.0;
+
+  if (ngroups <= 0) return;
+
+  checkCudaErrors(cudaMemcpy(d_res, h_res, sizeof(OSQPFloat), cudaMemcpyHostToDevice));
+
+  group_penalty_reccone_rate_kernel<<<ngroups, GROUP_THREADS>>>(d_w, d_l, d_u, d_a1,
+                                                                d_type, d_gp, d_rows,
+                                                                default_type, infval,
+                                                                d_res);
+
+  checkCudaErrors(cudaMemcpy(h_res, d_res, sizeof(OSQPFloat), cudaMemcpyDeviceToHost));
+}
+
+void cuda_vec_group_penalty_conj_value(const OSQPFloat* d_y,
+                                       const OSQPFloat* d_a1,
+                                       const OSQPInt*   d_type,
+                                             OSQPInt    default_type,
+                                       const OSQPInt*   d_gp,
+                                       const OSQPInt*   d_rows,
+                                             OSQPInt    ngroups,
+                                             OSQPFloat* h_res,
+                                             OSQPFloat* d_res) {
+
+  *h_res = 0.0;
+
+  if (ngroups <= 0) return;
+
+  checkCudaErrors(cudaMemcpy(d_res, h_res, sizeof(OSQPFloat), cudaMemcpyHostToDevice));
+
+  group_penalty_conj_value_kernel<<<ngroups, GROUP_THREADS>>>(d_y, d_a1, d_type,
+                                                              d_gp, d_rows,
+                                                              default_type, d_res);
+
+  checkCudaErrors(cudaMemcpy(h_res, d_res, sizeof(OSQPFloat), cudaMemcpyDeviceToHost));
+
+  /* A group outside its dual ball contributes OSQP_INFTY to the sum */
+  if (*h_res >= OSQP_INFTY) *h_res = OSQP_INFTY;
+}
+
+void cuda_vec_group_equalize_scaling(      OSQPFloat* d_corr,
+                                     const OSQPFloat* d_E,
+                                           OSQPInt    n,
+                                     const OSQPInt*   d_gp,
+                                     const OSQPInt*   d_rows,
+                                           OSQPInt    ngroups) {
+
+  /* Ungrouped rows keep their scaling, so the correction is 1 there */
+  cuda_vec_set_sc(d_corr, 1.0, n);
+
+  if (ngroups <= 0) return;
+
+  group_equalize_scaling_kernel<<<ngroups, GROUP_THREADS>>>(d_corr, d_E, d_gp, d_rows);
+}
+
+void cuda_vec_group_penalty_check(const OSQPFloat* d_a1,
+                                  const OSQPFloat* d_a2,
+                                  const OSQPFloat* d_d,
+                                  const OSQPInt*   d_type,
+                                        OSQPInt    default_type,
+                                        OSQPInt    n,
+                                  const OSQPInt*   d_gp,
+                                  const OSQPInt*   d_rows,
+                                        OSQPInt    ngroups,
+                                        OSQPInt    ngrouped,
+                                        OSQPInt*   h_res,
+                                        OSQPInt*   d_res) {
+
+  OSQPInt number_of_blocks = (n / THREADS_PER_BLOCK) + 1;
+
+  unsigned long long  h_count = 0;
+  unsigned long long* d_count;
+
+  *h_res = 0;
+  checkCudaErrors(cudaMemcpy(d_res, h_res, sizeof(OSQPInt), cudaMemcpyHostToDevice));
+
+  /* The count is a second reduction target, so it cannot share d_res */
+  checkCudaErrors(cudaMalloc(&d_count, sizeof(unsigned long long)));
+  checkCudaErrors(cudaMemcpy(d_count, &h_count, sizeof(unsigned long long),
+                             cudaMemcpyHostToDevice));
+
+  group_type_count_kernel<<<number_of_blocks, THREADS_PER_BLOCK>>>(d_type, default_type,
+                                                                   d_count, n);
+
+  if (ngroups > 0) {
+    group_penalty_check_kernel<<<ngroups, GROUP_THREADS>>>(d_a1, d_a2, d_d, d_type,
+                                                           d_gp, d_rows, default_type,
+                                                           d_res);
+  }
+
+  checkCudaErrors(cudaMemcpy(h_res, d_res, sizeof(OSQPInt), cudaMemcpyDeviceToHost));
+  checkCudaErrors(cudaMemcpy(&h_count, d_count, sizeof(unsigned long long),
+                             cudaMemcpyDeviceToHost));
+  checkCudaErrors(cudaFree(d_count));
+
+  /* Disagreeing either way: a group type on an ungrouped row, or a grouped row
+     whose type is separable. The per-group kernel catches the latter as
+     GROUP_MIXED, so what this adds is the former. */
+  if (h_count != (unsigned long long)ngrouped) *h_res |= OSQP_PENALTY_ERR_GROUP_TYPE;
 }
 
 void cuda_vec_round(OSQPFloat* d_a,

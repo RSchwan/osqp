@@ -333,6 +333,89 @@ OSQPFloat OSQPVectorf_penalty_conj_value(const OSQPVectorf* y,
                                          OSQPInt            default_type,
                                          OSQPVectorf*       scratch);
 
+
+/* Non-separable penalty groups.
+ *
+ * Group g owns the rows group_rows[group_ptr[g] .. group_ptr[g+1]-1] and
+ * carries a single penalty
+
+   OSQP_PENALTY_NORM2  : Phi(s_G) = alpha1 * ||s_G||_2
+   OSQP_PENALTY_NORMINF: Phi(s_G) = alpha1 * ||s_G||_inf
+
+ * whose type and weight are read from the group's first row; every row of a
+ * group is kept in agreement by OSQPVectorf_penalty_groups_check.  All four
+ * routines leave rows outside every group untouched, so they compose with the
+ * elementwise routines above over a disjoint row set.  Both norms are
+ * positively homogeneous, so a group always grows exactly linearly.
+ *
+ * rho must be constant on a group, which set_rho_vec guarantees by classifying
+ * every grouped row as an inequality.
+ */
+
+/* Group part of the generalized projection z = vbar + prox_{Phi/rho}(v - vbar),
+   applied after the elementwise pass has written vbar + prox_{phi/rho} on the
+   ungrouped rows.  z and v may alias.  sort_tmp is a preallocated float vector
+   of length 2*ngrouped: the residuals are staged in its first half so that the
+   l_inf projection can sort their magnitudes in the second half without losing
+   the signs.
+ */
+void OSQPVectorf_group_prox_penalty(OSQPVectorf*       z,
+                                    const OSQPVectorf* v,
+                                    const OSQPVectorf* l,
+                                    const OSQPVectorf* u,
+                                    OSQPFloat          rho,
+                                    const OSQPVectorf* alpha1,
+                                    const OSQPVectori* type,
+                                    OSQPInt            default_type,
+                                    const OSQPVectori* group_ptr,
+                                    const OSQPVectori* group_rows,
+                                    OSQPInt            ngroups,
+                                    OSQPVectorf*       sort_tmp);
+
+/* Group part of the objective, sum_g alpha1_g * ||R(z)_G||, where the residual
+   is R(z) = z - min(max(z,l),u).
+ */
+OSQPFloat OSQPVectorf_group_penalty_value(const OSQPVectorf* z,
+                                          const OSQPVectorf* l,
+                                          const OSQPVectorf* u,
+                                          const OSQPVectorf* alpha1,
+                                          const OSQPVectori* type,
+                                          OSQPInt            default_type,
+                                          const OSQPVectori* group_ptr,
+                                          const OSQPVectori* group_rows,
+                                          OSQPInt            ngroups,
+                                          OSQPVectorf*       scratch);
+
+/* Group part of the recession rate along w, that is
+   sum_g alpha1_g * || (dist(w_i, rec[l_i,u_i]))_{i in G} ||.
+   Values of +/- infval or larger are treated as infinite.
+ */
+OSQPFloat OSQPVectorf_group_penalty_reccone_rate(const OSQPVectorf* w,
+                                                 const OSQPVectorf* l,
+                                                 const OSQPVectorf* u,
+                                                 const OSQPVectorf* alpha1,
+                                                 const OSQPVectori* type,
+                                                 OSQPInt            default_type,
+                                                 const OSQPVectori* group_ptr,
+                                                 const OSQPVectori* group_rows,
+                                                 OSQPInt            ngroups,
+                                                 OSQPFloat          infval,
+                                                 OSQPVectorf*       scratch);
+
+/* Group part of the conjugate.  Both group penalties are norms, so the
+   conjugate is the indicator of the dual-norm ball: ||y_G||_2 <= alpha1 for
+   NORM2 and ||y_G||_1 <= alpha1 for NORMINF.  Returns OSQP_INFTY outside it
+   and zero otherwise.
+ */
+OSQPFloat OSQPVectorf_group_penalty_conj_value(const OSQPVectorf* y,
+                                               const OSQPVectorf* alpha1,
+                                               const OSQPVectori* type,
+                                               OSQPInt            default_type,
+                                               const OSQPVectori* group_ptr,
+                                               const OSQPVectori* group_rows,
+                                               OSQPInt            ngroups,
+                                               OSQPVectorf*       scratch);
+
 # if OSQP_EMBEDDED_MODE != 1
 
 /* Vector elementwise reciprocal b = 1./a (needed for scaling)*/
@@ -373,6 +456,19 @@ OSQPInt OSQPVectorf_ew_bounds_type(OSQPVectori*       iseq,
                                    OSQPFloat          infval);
 
 
+/* Replace E on each penalty group by the group's geometric mean, which is what
+   makes alpha*||E_G s_G|| a group penalty again: a norm only survives the
+   constraint scaling when E is constant on the group.  The correction factor
+   Ehat/E is written into corr, 1 on every ungrouped row, so that the caller
+   can apply the same factor to the rows of A.  E itself is left untouched.
+ */
+void OSQPVectorf_group_equalize_scaling(OSQPVectorf*       corr,
+                                        const OSQPVectorf* E,
+                                        const OSQPVectori* group_ptr,
+                                        const OSQPVectori* group_rows,
+                                        OSQPInt            ngroups);
+
+
 /* Scale (invert = 0) or unscale (invert = 1) soft-constraint penalty
    parameters in place, for a problem scaled by the objective factor c and the
    constraint scaling E:
@@ -401,6 +497,11 @@ void OSQPVectorf_ew_scale_penalty(OSQPVectorf*       alpha1,
 #define OSQP_PENALTY_ERR_HUBER_W   (0x04)   /* Huber row with alpha1 <= 0 */
 #define OSQP_PENALTY_ERR_HUBER_D   (0x08)   /* Huber row with delta <= 0 */
 
+/* Flags returned by OSQPVectorf_penalty_groups_check */
+#define OSQP_PENALTY_ERR_GROUP_TYPE   (0x10)  /* a group type outside any group, or a grouped row without one */
+#define OSQP_PENALTY_ERR_GROUP_MIXED  (0x20)  /* rows of one group disagree on type or on alpha1 */
+#define OSQP_PENALTY_ERR_GROUP_WEIGHT (0x40)  /* group weight not finite and positive, or alpha2/delta set */
+
 /* Check every row's parameters against its penalty type. Returns 0 if all rows
    are valid, otherwise the OR of the OSQP_PENALTY_ERR_* flags above.
    scratch is a preallocated one-element integer vector for backend reductions.
@@ -410,6 +511,24 @@ OSQPInt OSQPVectorf_penalty_params_check(const OSQPVectorf* alpha1,
                                          const OSQPVectorf* delta,
                                          const OSQPVectori* type,
                                          OSQPInt            default_type,
+                                         OSQPVectori*       scratch);
+
+/* Check the group layout against the per-row types and weights.  Verifies that
+   group types and group membership name exactly the same rows, that the rows
+   of a group agree on their type and on alpha1, and that a group's weight is
+   finite and positive with alpha2 and delta unused.  Valid with ngroups = 0,
+   where it only rejects a group type outside any group.  Returns 0 if
+   everything is consistent, otherwise the OR of the flags above.
+   scratch is a preallocated one-element integer vector for backend reductions.
+ */
+OSQPInt OSQPVectorf_penalty_groups_check(const OSQPVectorf* alpha1,
+                                         const OSQPVectorf* alpha2,
+                                         const OSQPVectorf* delta,
+                                         const OSQPVectori* type,
+                                         OSQPInt            default_type,
+                                         const OSQPVectori* group_ptr,
+                                         const OSQPVectori* group_rows,
+                                         OSQPInt            ngroups,
                                          OSQPVectori*       scratch);
 
 /* Elementwise replacement based on lt comparison.

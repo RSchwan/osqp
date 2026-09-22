@@ -66,12 +66,23 @@ enum osqp_linsys_solver_type {
 /**
  * Penalty phi applied to the slack of a soft row l <= a'x + xi <= u.
  * The alpha1/alpha2/delta weights are set per row by osqp_setup_penalty.
+ *
+ * NORM2 and NORMINF are not separable: they penalize a norm of the slacks of a
+ * whole group of rows. A row carrying one of them must name its group through
+ * the group_id argument of osqp_setup_penalty, and every row of a group must
+ * agree on the type and on alpha1. The remaining types are separable and their
+ * rows must have group_id = OSQP_NO_GROUP.
  */
 enum osqp_penalty_type {
     OSQP_PENALTY_NONE = 0,  /**< Hard constraint; no weights used */
     OSQP_PENALTY_L1L2,      /**< phi(s) = alpha1*|s| + (alpha2/2)*s^2, alpha1 >= 0, alpha2 >= 0; L1, quadratic and elastic net */
-    OSQP_PENALTY_HUBER      /**< phi(s) = alpha1*h_delta(s), alpha1 > 0, delta > 0; Huber loss with transition point delta */
+    OSQP_PENALTY_HUBER,     /**< phi(s) = alpha1*h_delta(s), alpha1 > 0, delta > 0; Huber loss with transition point delta */
+    OSQP_PENALTY_NORM2,     /**< Phi(s_G) = alpha1*||s_G||_2, alpha1 > 0; grouped */
+    OSQP_PENALTY_NORMINF    /**< Phi(s_G) = alpha1*||s_G||_inf, alpha1 > 0; grouped */
 };
+
+/** Value of group_id marking a row that belongs to no penalty group */
+#define OSQP_NO_GROUP (-1)
 
 /*********************************
 * Preconditioners for CG method *
